@@ -4,7 +4,9 @@ RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
 
 ## Status
 
-**Plan 1 (foundation + create) — implemented.** Snapshot, restore, clone, upgrade, and TUI come in Plans 2–5.
+**Plan 1 (foundation + create) — implemented.**  
+**Plan 2 (snapshot + restore PITR) — implemented.**  
+Clone, upgrade, and TUI come in Plans 3-5.
 
 ## Quick start
 
@@ -40,6 +42,41 @@ RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
    psql "postgresql://leads:changeme@127.0.0.1:<port>/billing"
    ```
    (The port is printed at the end of `create` and saved in `~/.local/share/pgforge/instances/billing/state.toml`.)
+
+## Snapshots and restore
+
+Take an on-demand full backup of a running instance:
+
+```bash
+pgforge snapshot --name billing --label "before-migration"
+# Snapshot taken: 20260511-141259F (label=Some("before-migration"), taken_at=2026-05-11T14:12:59Z)
+```
+
+List snapshots:
+
+```bash
+pgforge snapshots --name billing
+```
+
+Restore as a new instance alongside the source (does not touch source):
+
+```bash
+# Restore the latest backup
+pgforge restore --source billing --as billing-recovery
+
+# Or PITR to a specific moment
+pgforge restore --source billing --as billing-recovery \
+    --target-time "2026-05-10T14:23:00Z"
+```
+
+The restored instance gets its own port, volume, and state file. The source
+keeps running untouched. Both are visible via `docker ps`. Connect to the
+restored instance with the connection string printed at the end.
+
+Backups live in your S3 bucket under `pgforge/<instance>/`. `pgforge restore`
+reads from the source instance's repo path, even when starting a new
+instance under a different name — so you can keep both around or kill the
+recovery instance once you've copied what you need.
 
 ## Architecture
 
