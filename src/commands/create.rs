@@ -185,8 +185,8 @@ pub async fn run_with_engine<E: DockerEngine>(
 
     // From here on, any failure should clean up the half-created container + volume + conf dir.
     let conf_dir = layout.root.clone();
-    match post_create_steps(docker, &id, &args, host_port, &state_root).await {
-        Ok(state) => Ok(state),
+    let state = match bootstrap_create(docker, &id, &args, host_port).await {
+        Ok(state) => state,
         Err(e) => {
             crate::docker::cleanup::cleanup_partial(
                 docker,
@@ -195,19 +195,34 @@ pub async fn run_with_engine<E: DockerEngine>(
                 &conf_dir,
             )
             .await;
-            Err(e)
+            return Err(e);
         }
+    };
+
+    // state.save_under is OUTSIDE the cleanup wrap — a fully-bootstrapped
+    // container shouldn't be destroyed because of a local filesystem error.
+    if let Err(e) = state.save_under(&state_root) {
+        tracing::error!(
+            target: "pgforge::create",
+            "instance {} bootstrapped successfully but state.toml save failed: {e}. \
+             Container {container_name} is running on port {host_port}; resave state \
+             manually or rerun once the filesystem is healthy.",
+            args.name
+        );
+        return Err(e);
     }
+    Ok(state)
 }
 
-/// Runs all steps after `create_container`: start, wait, stanza-create, persist state.
-/// Extracted so the caller can run cleanup_partial on any failure.
-async fn post_create_steps<E: DockerEngine>(
+/// All steps after `create_container` that must rollback on failure: start,
+/// wait for pg ready, create pgbackrest stanza. Returns the in-memory state
+/// — saving it to disk is the caller's responsibility (kept outside the
+/// cleanup wrap so a healthy container survives a state-save error).
+async fn bootstrap_create<E: DockerEngine>(
     docker: &E,
     id: &str,
     args: &CreateArgs,
     host_port: u16,
-    state_root: &PathBuf,
 ) -> Result<InstanceState> {
     // 6. Start it.
     docker.start_container(id).await?;
@@ -235,8 +250,7 @@ async fn post_create_steps<E: DockerEngine>(
         )));
     }
 
-    // 7. Persist state.
-    let state = InstanceState {
+    Ok(InstanceState {
         instance: Instance {
             name: args.name.clone(),
             db_name: args.name.clone(),
@@ -248,10 +262,7 @@ async fn post_create_steps<E: DockerEngine>(
             host_port,
         },
         created_at: crate::time::now_iso(),
-    };
-    state.save_under(state_root)?;
-
-    Ok(state)
+    })
 }
 
 

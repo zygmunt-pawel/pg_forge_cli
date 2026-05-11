@@ -212,25 +212,44 @@ pub async fn run_with_engine<E: DockerEngine>(
     let id = docker.create_container(&spec).await?;
 
     let conf_dir = root.clone();
-    let result = post_create_steps(docker, &id, &args, source, host_port, &state_root).await;
-    match result {
-        Ok(state) => Ok(state),
+    let state = match bootstrap_clone(docker, &id, &args, source, host_port).await {
+        Ok(state) => state,
         Err(e) => {
             cleanup_partial(docker, &container_name, &volume_name, &conf_dir).await;
-            Err(e)
+            return Err(e);
         }
+    };
+
+    // Saving state.toml happens OUTSIDE the cleanup wrap. The container is
+    // fully bootstrapped and healthy — pg_basebackup completed and the
+    // stanza is created. If writing the local state file fails (disk full,
+    // bad perms), destroying the working clone would be a worse outcome
+    // than the missing state.toml — the user has the actual instance and
+    // can re-save it. Log loudly so they know.
+    if let Err(e) = state.save_under(&state_root) {
+        tracing::error!(
+            target: "pgforge::clone",
+            "clone bootstrapped successfully but state.toml save failed: {e}. \
+             Container {container_name} is running on port {host_port}; \
+             rerun `pgforge clone --source {} --as {}` after fixing the local \
+             filesystem, or save state.toml manually under {state_root:?}.",
+            args.source, args.as_name
+        );
+        return Err(e);
     }
+    Ok(state)
 }
 
-/// Runs all steps after `create_container`: start, wait, persist state.
-/// Extracted so the caller can run cleanup_partial on any failure.
-async fn post_create_steps<E: DockerEngine>(
+/// All steps after `create_container` that must rollback on failure: start,
+/// wait for pg ready, create pgbackrest stanza. Returns the in-memory state
+/// — saving it to disk is the caller's responsibility (and is kept OUTSIDE
+/// the cleanup wrap so a healthy container survives a state-save error).
+async fn bootstrap_clone<E: DockerEngine>(
     docker: &E,
     id: &str,
     args: &CloneArgs,
     source: InstanceState,
     host_port: u16,
-    state_root: &std::path::Path,
 ) -> Result<InstanceState> {
     docker.start_container(id).await?;
     docker
@@ -259,7 +278,7 @@ async fn post_create_steps<E: DockerEngine>(
         )));
     }
 
-    let state = InstanceState {
+    Ok(InstanceState {
         instance: Instance {
             name: args.as_name.clone(),
             db_name: source.instance.db_name,
@@ -271,7 +290,5 @@ async fn post_create_steps<E: DockerEngine>(
             host_port,
         },
         created_at: crate::time::now_iso(),
-    };
-    state.save_under(state_root)?;
-    Ok(state)
+    })
 }
