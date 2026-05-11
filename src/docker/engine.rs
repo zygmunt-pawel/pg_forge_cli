@@ -22,8 +22,17 @@ pub struct CreateContainerSpec {
     pub memory_mb: u32,
     pub network: String,
     pub shm_size_mb: u32,
-    /// Override the container's default entrypoint/command. None = use image default.
-    pub command_override: Option<Vec<String>>,
+    /// Replace the image's ENTRYPOINT entirely. Used when a generated
+    /// bootstrap script must run instead of `docker-entrypoint.sh` — e.g.
+    /// `pgforge clone` (pg_basebackup before postgres) and `pgforge restore`
+    /// (pgbackrest restore before postgres).
+    pub entrypoint_override: Option<Vec<String>>,
+    /// Replace the image's CMD only (ENTRYPOINT is left intact). Used by
+    /// `pgforge create` to pass `postgres -c config_file=... -c hba_file=...`
+    /// to docker-entrypoint.sh so that our bind-mounted configs are actually
+    /// read — without these flags, postgres reads only $PGDATA-internal
+    /// initdb defaults and our hardened configs are silently ignored.
+    pub cmd_override: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

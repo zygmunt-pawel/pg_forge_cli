@@ -198,9 +198,10 @@ pub async fn run_with_engine<E: DockerEngine>(
         memory_mb: tuning.ram_mb,
         network: "pgforge_net".into(),
         shm_size_mb: 256,
-        command_override: Some(vec![
+        entrypoint_override: Some(vec![
             "/usr/local/bin/pgforge-restore-entrypoint.sh".into(),
         ]),
+        cmd_override: None,
     };
     let container_name = spec.container_name.clone();
     let volume_name = spec.volumes[0].volume_name.clone();

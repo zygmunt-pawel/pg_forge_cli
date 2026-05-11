@@ -205,9 +205,16 @@ pub async fn run_with_engine<E: DockerEngine>(
         memory_mb: tuning.ram_mb,
         network: "pgforge_net".into(),
         shm_size_mb: 256,
-        command_override: Some(vec![
+        // Clone needs to pg_basebackup BEFORE postgres starts; our entrypoint
+        // wraps that work and then `exec docker-entrypoint.sh postgres`. The
+        // chained docker-entrypoint then needs the same -c flags as `create`
+        // so the cloned cluster picks up bind-mounted configs (pg_hba in
+        // particular — without it, `pgforge clone <of-this-clone>` would
+        // fail because no host-replication rule is in effect).
+        entrypoint_override: Some(vec![
             "/usr/local/bin/pgforge-clone-entrypoint.sh".into(),
         ]),
+        cmd_override: None,
     };
     let id = docker.create_container(&spec).await?;
 

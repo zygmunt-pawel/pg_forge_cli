@@ -178,9 +178,16 @@ impl DockerEngine for BollardEngine {
             ..Default::default()
         };
 
-        if let Some(cmd) = &spec.command_override {
-            cfg.entrypoint = Some(cmd.clone());
+        if let Some(ep) = &spec.entrypoint_override {
+            cfg.entrypoint = Some(ep.clone());
+            // When the entrypoint is fully replaced, don't carry the image's
+            // default CMD through — our entrypoint script needs to be the
+            // single thing that runs (it chains to docker-entrypoint.sh itself
+            // after its bootstrap steps).
             cfg.cmd = None;
+        }
+        if let Some(cmd) = &spec.cmd_override {
+            cfg.cmd = Some(cmd.clone());
         }
 
         let opts = CreateContainerOptionsBuilder::default()

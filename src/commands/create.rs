@@ -177,7 +177,19 @@ pub async fn run_with_engine<E: DockerEngine>(
         memory_mb: tuning.ram_mb,
         network: "pgforge_net".into(),
         shm_size_mb: 256,
-        command_override: None,
+        // Keep image's docker-entrypoint.sh (it handles initdb + init-SQL
+        // hooks). Override CMD only, to point postgres at the bind-mounted
+        // configs — without this, our generated postgresql.conf and
+        // pg_hba.conf are inert (docker-entrypoint reads only $PGDATA
+        // contents).
+        entrypoint_override: None,
+        cmd_override: Some(vec![
+            "postgres".into(),
+            "-c".into(),
+            "config_file=/etc/postgresql/postgresql.conf".into(),
+            "-c".into(),
+            "hba_file=/etc/postgresql/pg_hba.conf".into(),
+        ]),
     };
     let container_name = spec.container_name.clone();
     let volume_name = spec.volumes[0].volume_name.clone();
