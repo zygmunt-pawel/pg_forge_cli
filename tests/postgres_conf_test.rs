@@ -3,16 +3,21 @@ use pgforge::domain::preset::Preset;
 use pgforge::postgres::conf::generate_postgresql_conf;
 
 #[test]
-fn tiny_macos_conf_contains_full_fsync_writethrough() {
-    let conf = generate_postgresql_conf(Preset::Tiny, Platform::MacOs);
-    assert!(conf.contains("wal_sync_method = fsync_writethrough"),
-            "expected fsync_writethrough on macOS, got:\n{conf}");
-}
-
-#[test]
-fn linux_conf_uses_fdatasync() {
-    let conf = generate_postgresql_conf(Preset::Tiny, Platform::Linux);
-    assert!(conf.contains("wal_sync_method = fdatasync"));
+fn conf_always_uses_fdatasync_regardless_of_host_platform() {
+    // Postgres runs inside a Linux container regardless of the host OS.
+    // `fsync_writethrough` (macOS-native F_FULLFSYNC) is rejected by Linux
+    // postgres as an unknown setting and the cluster refuses to start.
+    for plat in [Platform::MacOs, Platform::Linux] {
+        let conf = generate_postgresql_conf(Preset::Tiny, plat);
+        assert!(
+            conf.contains("wal_sync_method = fdatasync"),
+            "expected fdatasync (only Linux-valid choice) for plat={plat:?}, got:\n{conf}"
+        );
+        assert!(
+            !conf.contains("fsync_writethrough"),
+            "fsync_writethrough is macOS-native, postgres in Linux container rejects it"
+        );
+    }
 }
 
 #[test]
