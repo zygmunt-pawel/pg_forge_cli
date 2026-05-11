@@ -320,4 +320,30 @@ impl DockerEngine for BollardEngine {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     }
+
+    async fn remove_container(&self, id: &str, force: bool) -> Result<()> {
+        use bollard::query_parameters::RemoveContainerOptionsBuilder;
+        let opts = RemoveContainerOptionsBuilder::default()
+            .force(force)
+            .v(true) // also remove anonymous volumes attached to this container
+            .build();
+        self.docker
+            .remove_container(id, Some(opts))
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("remove_container({id}): {e}")))
+    }
+
+    async fn remove_volume(&self, name: &str) -> Result<()> {
+        use bollard::query_parameters::RemoveVolumeOptionsBuilder;
+        let opts = RemoveVolumeOptionsBuilder::default().force(true).build();
+        match self.docker.remove_volume(name, Some(opts)).await {
+            Ok(_) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()), // already gone — idempotent
+            Err(e) => Err(PgForgeError::Docker(format!(
+                "remove_volume({name}): {e}"
+            ))),
+        }
+    }
 }

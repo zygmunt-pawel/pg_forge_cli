@@ -284,6 +284,14 @@ mod tests {
             self.calls.lock().unwrap().push("wait_for_container_running");
             Ok(())
         }
+        async fn remove_container(&self, _: &str, _: bool) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("remove_container");
+            Ok(())
+        }
+        async fn remove_volume(&self, _: &str) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("remove_volume");
+            Ok(())
+        }
     }
 
     #[tokio::test]

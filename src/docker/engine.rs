@@ -67,4 +67,10 @@ pub trait DockerEngine: Send + Sync {
         id: &str,
         timeout: std::time::Duration,
     ) -> Result<()>;
+
+    /// Remove a container (force=true → kill if running). Used for rollback.
+    async fn remove_container(&self, id: &str, force: bool) -> Result<()>;
+
+    /// Remove a named volume. Idempotent: no-op if the volume doesn't exist.
+    async fn remove_volume(&self, name: &str) -> Result<()>;
 }
