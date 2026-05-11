@@ -30,7 +30,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     state_root: PathBuf,
 ) -> Result<SnapshotRecord> {
     let container = format!("pgforge_{}", args.instance);
-    if !docker.container_exists(&container).await? {
+    if !docker.container_running(&container).await? {
         return Err(PgForgeError::Anyhow(anyhow::anyhow!(
             "container {container:?} is not running. Start it with `docker start {container}` and retry."
         )));

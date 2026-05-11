@@ -55,6 +55,11 @@ pub trait DockerEngine: Send + Sync {
     async fn start_container(&self, id: &str) -> Result<()>;
     async fn container_exists(&self, name: &str) -> Result<bool>;
 
+    /// True iff the container exists AND `inspect.state.running == true`.
+    /// Distinct from `container_exists`, which also returns true for stopped
+    /// containers — the wrong semantics when callers need "can I exec / connect".
+    async fn container_running(&self, name: &str) -> Result<bool>;
+
     /// Run a command inside a running container. Returns combined output.
     async fn exec(&self, id: &str, cmd: &[&str]) -> Result<ExecOutput>;
 

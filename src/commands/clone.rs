@@ -58,9 +58,10 @@ pub async fn run_with_engine<E: DockerEngine>(
 ) -> Result<InstanceState> {
     // Source must be running so pg_basebackup can connect.
     let source_container = format!("pgforge_{}", args.source);
-    if !docker.container_exists(&source_container).await? {
+    if !docker.container_running(&source_container).await? {
         return Err(PgForgeError::Anyhow(anyhow::anyhow!(
-            "source container {source_container:?} is not running. Start it and retry."
+            "source instance {:?} is not running. Start it with `docker start {source_container}` and retry.",
+            args.source
         )));
     }
 

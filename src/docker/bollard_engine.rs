@@ -226,6 +226,22 @@ impl DockerEngine for BollardEngine {
         Ok(!list.is_empty())
     }
 
+    async fn container_running(&self, name: &str) -> Result<bool> {
+        match self.docker.inspect_container(name, None).await {
+            Ok(inspect) => Ok(inspect
+                .state
+                .as_ref()
+                .and_then(|s| s.running)
+                .unwrap_or(false)),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(false),
+            Err(e) => Err(PgForgeError::Docker(format!(
+                "inspect_container({name}): {e}"
+            ))),
+        }
+    }
+
     async fn exec(&self, id: &str, cmd: &[&str]) -> Result<crate::docker::engine::ExecOutput> {
         use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
         use bollard::container::LogOutput;

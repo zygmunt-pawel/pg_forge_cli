@@ -285,6 +285,10 @@ mod tests {
             self.calls.lock().unwrap().push("container_exists");
             Ok(false)
         }
+        async fn container_running(&self, _: &str) -> crate::error::Result<bool> {
+            self.calls.lock().unwrap().push("container_running");
+            Ok(true)
+        }
         async fn exec(&self, _: &str, _: &[&str]) -> crate::error::Result<crate::docker::engine::ExecOutput> {
             self.calls.lock().unwrap().push("exec");
             Ok(crate::docker::engine::ExecOutput {
