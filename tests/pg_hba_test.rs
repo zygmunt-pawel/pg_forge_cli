@@ -45,12 +45,18 @@ fn hba_rejects_default_anything_else() {
 }
 
 #[test]
-fn hba_grants_host_replication_to_pgbackrest_over_samenet() {
+fn hba_grants_host_replication_to_pgreplica_not_pgbackrest() {
     // Clone uses pg_basebackup from a sibling container — host replication
-    // over the docker bridge is required.
+    // over the docker bridge is required. The role used must be `pgreplica`,
+    // NOT `pgbackrest`, because `pgbackrest` is SUPERUSER and exposing a
+    // SUPERUSER role over TCP-SCRAM is a lateral-RCE vector.
     let hba = generate_pg_hba("billing", "leads");
     assert!(
-        hba.contains("host    replication     pgbackrest      samenet                 scram-sha-256"),
-        "must allow host replication from samenet, got:\n{hba}"
+        hba.contains("host    replication     pgreplica       samenet                 scram-sha-256"),
+        "must allow host replication for pgreplica from samenet, got:\n{hba}"
+    );
+    assert!(
+        !hba.contains("host    replication     pgbackrest"),
+        "must NOT expose pgbackrest (SUPERUSER) over TCP, got:\n{hba}"
     );
 }

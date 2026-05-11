@@ -1,6 +1,20 @@
-/// Render the entrypoint script bind-mounted into a clone container. If
-/// PGDATA is empty (first start), pg_basebackup from the source container
-/// over the docker bridge. Then chain into the official postgres entrypoint.
+/// Render the entrypoint script bind-mounted into a clone container.
+///
+/// Three invariants the script enforces:
+///
+/// 1. **Authentication uses the non-SUPERUSER `pgreplica` role**, not
+///    `pgbackrest`. The latter is SUPERUSER and is only exposed via the
+///    local unix socket — see `postgres/hba.rs`.
+/// 2. **Resume uses a marker file**, not `PG_VERSION`. A partially-completed
+///    `pg_basebackup` can leave a `PG_VERSION` behind on a corrupt cluster;
+///    the marker is written only after basebackup returns successfully.
+///    On retry we clear PGDATA so pg_basebackup (which refuses non-empty
+///    targets) can run again.
+/// 3. **`.pgpass` is copied to a postgres-owned tmpfs location** before
+///    pg_basebackup reads it. The bind-mounted file at
+///    `/var/lib/postgresql/.pgpass` is owned by the *host* UID, which may
+///    not match the container's postgres UID under macOS Docker Desktop's
+///    FUSE remapping — libpq would then fail to read the file.
 pub fn generate_clone_entrypoint(source_container: &str) -> String {
     format!(
         r#"#!/bin/sh
@@ -8,13 +22,28 @@ pub fn generate_clone_entrypoint(source_container: &str) -> String {
 set -eu
 
 PGDATA="/var/lib/postgresql/data/pgdata"
-export PGPASSFILE=/var/lib/postgresql/.pgpass
+PGPASSFILE_SRC="/var/lib/postgresql/.pgpass"
+PGPASSFILE_RUNTIME="/tmp/pgforge.pgpass"
+MARKER="$PGDATA/.pgforge-clone-complete"
 
-# Clone only if the data directory is empty / has no PG cluster yet.
-if [ ! -f "$PGDATA/PG_VERSION" ]; then
+# Make the bind-mounted .pgpass readable by the postgres user regardless of
+# whatever UID the host filesystem mapped it as.
+cp "$PGPASSFILE_SRC" "$PGPASSFILE_RUNTIME"
+chmod 0600 "$PGPASSFILE_RUNTIME"
+chown postgres:postgres "$PGPASSFILE_RUNTIME"
+
+# Clone only if not already complete. Marker is written AFTER pg_basebackup
+# finishes — so a partial/crashed previous attempt leaves no marker, and we
+# retry instead of booting on corruption.
+if [ ! -f "$MARKER" ]; then
+    # Clear partial state from any prior failed attempt; pg_basebackup
+    # refuses a non-empty target directory.
+    find "$PGDATA" -mindepth 1 -delete 2>/dev/null || true
     mkdir -p "$PGDATA"
     chown -R postgres:postgres "$PGDATA"
-    su - postgres -c 'PGPASSFILE=/var/lib/postgresql/.pgpass pg_basebackup -h {source} -p 5432 -U pgbackrest -D /var/lib/postgresql/data/pgdata -X stream -P --wal-method=stream --no-password'
+    su - postgres -c "PGPASSFILE=$PGPASSFILE_RUNTIME pg_basebackup -h {source} -p 5432 -U pgreplica -D $PGDATA -X stream -P --wal-method=stream --no-password"
+    touch "$MARKER"
+    chown postgres:postgres "$MARKER"
 fi
 
 exec docker-entrypoint.sh postgres

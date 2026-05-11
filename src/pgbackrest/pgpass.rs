@@ -1,9 +1,10 @@
-/// Render a `.pgpass` file allowing the `pgbackrest` role to authenticate
-/// without prompting. Format per Postgres docs:
+/// Render a `.pgpass` file allowing the `pgreplica` role to authenticate
+/// without prompting (used by `pgforge clone`'s pg_basebackup over TCP).
+/// Format per Postgres docs:
 ///   hostname:port:database:username:password
 /// `\` and `:` in the password field must be escaped with `\`.
-pub fn generate_pgpass(pgbackrest_password: &str) -> String {
-    let escaped: String = pgbackrest_password
+pub fn generate_pgpass(replication_password: &str) -> String {
+    let escaped: String = replication_password
         .chars()
         .flat_map(|c| match c {
             '\\' => vec!['\\', '\\'],
@@ -11,5 +12,5 @@ pub fn generate_pgpass(pgbackrest_password: &str) -> String {
             other => vec![other],
         })
         .collect();
-    format!("*:*:*:pgbackrest:{escaped}\n")
+    format!("*:*:*:pgreplica:{escaped}\n")
 }

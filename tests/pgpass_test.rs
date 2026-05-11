@@ -1,15 +1,17 @@
 use pgforge::pgbackrest::pgpass::generate_pgpass;
 
 #[test]
-fn pgpass_contains_pgbackrest_role_with_password() {
+fn pgpass_contains_pgreplica_role_with_password() {
+    // Clone's pg_basebackup authenticates as `pgreplica` (the dedicated
+    // non-SUPERUSER replication role), not as `pgbackrest`.
     let s = generate_pgpass("hunter2");
-    assert!(s.contains(":pgbackrest:hunter2"));
+    assert!(s.contains(":pgreplica:hunter2"), "got: {s:?}");
 }
 
 #[test]
 fn pgpass_is_wildcard_host_port_db() {
     let s = generate_pgpass("hunter2");
-    assert!(s.starts_with("*:*:*:pgbackrest:"));
+    assert!(s.starts_with("*:*:*:pgreplica:"), "got: {s:?}");
 }
 
 #[test]
