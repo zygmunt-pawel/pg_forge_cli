@@ -6,7 +6,8 @@ RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
 
 **Plan 1 (foundation + create) — implemented.**  
 **Plan 2 (snapshot + restore PITR) — implemented.**  
-Clone, upgrade, and TUI come in Plans 3-5.
+**Plan 3 (clone via pg_basebackup) — implemented.**  
+Upgrade and TUI come in Plans 4-5.
 
 ## Quick start
 
@@ -77,6 +78,30 @@ Backups live in your S3 bucket under `pgforge/<instance>/`. `pgforge restore`
 reads from the source instance's repo path, even when starting a new
 instance under a different name — so you can keep both around or kill the
 recovery instance once you've copied what you need.
+
+## Cloning
+
+Make a working copy of a running instance for staging / migration testing.
+Uses streaming replication (`pg_basebackup`) under the hood, not S3.
+
+```bash
+pgforge clone --source billing --as billing-staging
+# Clone ready:
+#   postgresql://leads:***@127.0.0.1:5435/billing
+```
+
+The clone is independent: own port, own volume, own state file, own backup
+repo path. The source keeps running untouched.
+
+If you have instances created before pgforge 0.3 (Plan 3) that need
+`host replication` in their pg_hba.conf, run once per instance:
+
+```bash
+pgforge reconfigure --name billing
+```
+
+This regenerates pg_hba.conf and runs `pg_ctl reload` inside the
+container — no restart needed.
 
 ## Architecture
 
