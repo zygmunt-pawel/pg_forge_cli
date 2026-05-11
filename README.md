@@ -7,6 +7,7 @@ RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
 **Plan 1 (foundation + create) — implemented.**  
 **Plan 2 (snapshot + restore PITR) — implemented.**  
 **Plan 3 (clone via pg_basebackup) — implemented.**  
+**Plan 3.5 (security + reliability hardening) — implemented.**  
 Upgrade and TUI come in Plans 4-5.
 
 ## Quick start
@@ -91,17 +92,23 @@ pgforge clone --source billing --as billing-staging
 ```
 
 The clone is independent: own port, own volume, own state file, own backup
-repo path. The source keeps running untouched.
+repo path, own pgbackrest stanza. The source keeps running untouched.
 
-If you have instances created before pgforge 0.3 (Plan 3) that need
-`host replication` in their pg_hba.conf, run once per instance:
+### Migration: existing instances created before Plan 3.5
+
+Plan 3.5 introduced a dedicated `pgreplica` role (non-SUPERUSER) used for
+TCP replication — `pgbackrest` (SUPERUSER) is no longer exposed over the
+docker bridge. Instances created before Plan 3.5 only have the
+`pgbackrest` role and cannot serve as clone sources until you add
+`pgreplica` manually:
 
 ```bash
-pgforge reconfigure --name billing
+docker exec -u postgres pgforge_<instance> psql -c \
+    "CREATE ROLE pgreplica WITH LOGIN REPLICATION PASSWORD '<same-pgbackrest-password>';"
+pgforge reconfigure --name <instance>   # regenerates pg_hba.conf and reloads
 ```
 
-This regenerates pg_hba.conf and runs `pg_ctl reload` inside the
-container — no restart needed.
+For fresh instances created with Plan 3.5+ this is automatic.
 
 ## Architecture
 
@@ -124,3 +131,11 @@ snapshot / restore / clone / upgrade / TUI.
   durability guarantee.
 - **No HA**: pgforge is intentionally single-host, no replication, no
   failover. Same model as RDS Single-AZ.
+- **Restored instances and pgbackrest stanza**: `pgforge restore`
+  generates `pgbackrest.conf` with the SOURCE instance's repo path so the
+  restore can read source backups. After PITR-promotion the restored
+  cluster gets a new system identifier — pgbackrest will then reject
+  `archive-push` to the source's stanza, and `pgforge snapshot
+  <restored>` is not supported. Treat restored instances as read-only
+  forensic copies for now. Promoting a restored instance to a fully
+  backed-up primary is a Plan 4 item.
