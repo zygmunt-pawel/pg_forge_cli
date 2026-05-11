@@ -2,4 +2,5 @@
 
 pub mod domain;
 pub mod error;
+pub mod pgbackrest;
 pub mod postgres;
