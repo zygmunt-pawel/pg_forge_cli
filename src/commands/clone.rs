@@ -81,15 +81,13 @@ pub async fn run_with_engine<E: DockerEngine>(
         &TcpProbe,
     )?;
 
-    // Per-instance config dir.
+    // Per-instance config dir. 0700 — contains pgbackrest.conf (S3 keys) and
+    // pgpass (replication password).
     let root = state_root
         .join("instances")
         .join(&args.as_name)
         .join("conf");
-    std::fs::create_dir_all(&root).map_err(|e| PgForgeError::Io {
-        path: root.clone(),
-        source: e,
-    })?;
+    crate::util::fs::create_secret_dir(&root)?;
     let postgresql_conf = root.join("postgresql.conf");
     let pg_hba = root.join("pg_hba.conf");
     let pgbackrest_conf = root.join("pgbackrest.conf");
@@ -114,26 +112,21 @@ pub async fn run_with_engine<E: DockerEngine>(
         source: e,
     })?;
     // pgbackrest.conf: clone gets its OWN repo path for future snapshots.
-    std::fs::write(&pgbackrest_conf, generate_pgbackrest_conf(&args.as_name, &s3))
-        .map_err(|e| PgForgeError::Io {
-            path: pgbackrest_conf.clone(),
-            source: e,
-        })?;
+    // Secret — carries S3 access_key + secret_key.
+    crate::util::fs::write_secret(&pgbackrest_conf, generate_pgbackrest_conf(&args.as_name, &s3))?;
     std::fs::write(&entrypoint, generate_clone_entrypoint(&source_container))
         .map_err(|e| PgForgeError::Io {
             path: entrypoint.clone(),
             source: e,
         })?;
-    std::fs::write(&pgpass, generate_pgpass(&source.instance.pgbackrest_password))
-        .map_err(|e| PgForgeError::Io {
-            path: pgpass.clone(),
-            source: e,
-        })?;
+    // .pgpass — write_secret sets 0600 (libpq refuses world-readable).
+    crate::util::fs::write_secret(&pgpass, generate_pgpass(&source.instance.pgbackrest_password))?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // entrypoint.sh — 0755 executable
+        // entrypoint.sh — 0755 executable (NOT a secret — bind-mounted as
+        // the container's entrypoint, no credentials inside).
         let mut perms = std::fs::metadata(&entrypoint)
             .map_err(|e| PgForgeError::Io {
                 path: entrypoint.clone(),
@@ -143,18 +136,6 @@ pub async fn run_with_engine<E: DockerEngine>(
         perms.set_mode(0o755);
         std::fs::set_permissions(&entrypoint, perms).map_err(|e| PgForgeError::Io {
             path: entrypoint.clone(),
-            source: e,
-        })?;
-        // .pgpass — 0600 (postgres refuses world-readable)
-        let mut pp = std::fs::metadata(&pgpass)
-            .map_err(|e| PgForgeError::Io {
-                path: pgpass.clone(),
-                source: e,
-            })?
-            .permissions();
-        pp.set_mode(0o600);
-        std::fs::set_permissions(&pgpass, pp).map_err(|e| PgForgeError::Io {
-            path: pgpass.clone(),
             source: e,
         })?;
     }

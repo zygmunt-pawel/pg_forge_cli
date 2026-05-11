@@ -28,18 +28,13 @@ impl InstanceState {
     pub fn save_under(&self, state_root: &Path) -> Result<()> {
         Instance::validate_name(&self.instance.name)?;
         let dir = Self::dir_under(state_root, &self.instance.name);
-        std::fs::create_dir_all(&dir).map_err(|e| PgForgeError::Io {
-            path: dir.clone(),
-            source: e,
-        })?;
+        // 0700 — state.toml contains plaintext app_password + pgbackrest_password.
+        crate::util::fs::create_secret_dir(&dir)?;
         let file = Self::file_under(state_root, &self.instance.name);
         let raw = toml::to_string_pretty(self).map_err(|e| {
             PgForgeError::Anyhow(anyhow::anyhow!("serialize instance state: {e}"))
         })?;
-        std::fs::write(&file, raw).map_err(|e| PgForgeError::Io {
-            path: file,
-            source: e,
-        })
+        crate::util::fs::write_secret(&file, raw)
     }
 
     pub fn load_under(state_root: &Path, name: &str) -> Result<Self> {

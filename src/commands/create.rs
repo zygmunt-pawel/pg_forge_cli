@@ -106,21 +106,20 @@ pub async fn run_with_engine<E: DockerEngine>(
     )?;
 
     // 2. Render configs and write them to the per-instance config dir on host.
+    // Conf root is 0700 — contains plaintext role password (init_sql) and S3
+    // credentials (pgbackrest.conf).
     let layout = ConfigLayout::for_instance(&state_root, &args.name);
-    std::fs::create_dir_all(&layout.root).map_err(|e| PgForgeError::Io {
-        path: layout.root.clone(),
-        source: e,
-    })?;
+    crate::util::fs::create_secret_dir(&layout.root)?;
     std::fs::write(&layout.postgresql_conf, generate_postgresql_conf(args.preset, plat))
         .map_err(|e| PgForgeError::Io { path: layout.postgresql_conf.clone(), source: e })?;
     std::fs::write(&layout.pg_hba, generate_pg_hba(&args.name, &args.app_user))
         .map_err(|e| PgForgeError::Io { path: layout.pg_hba.clone(), source: e })?;
-    std::fs::write(&layout.pgbackrest_conf, generate_pgbackrest_conf(&args.name, &s3))
-        .map_err(|e| PgForgeError::Io { path: layout.pgbackrest_conf.clone(), source: e })?;
+    // pgbackrest.conf carries S3 access_key + secret_key.
+    crate::util::fs::write_secret(&layout.pgbackrest_conf, generate_pgbackrest_conf(&args.name, &s3))?;
     let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
-    std::fs::create_dir_all(&init_dir).map_err(|e| PgForgeError::Io { path: init_dir.clone(), source: e })?;
-    std::fs::write(&layout.init_sql, generate_init_sql(&args.pgbackrest_password))
-        .map_err(|e| PgForgeError::Io { path: layout.init_sql.clone(), source: e })?;
+    crate::util::fs::create_secret_dir(&init_dir)?;
+    // init_sql carries CREATE ROLE … PASSWORD '…' in plaintext.
+    crate::util::fs::write_secret(&layout.init_sql, generate_init_sql(&args.pgbackrest_password))?;
 
     // 3. Make sure the per-version image exists.
     docker

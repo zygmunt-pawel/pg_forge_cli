@@ -77,16 +77,14 @@ pub async fn run_with_engine<E: DockerEngine>(
         &TcpProbe,
     )?;
 
-    // 2. Per-instance config dir for the NEW restored instance.
+    // 2. Per-instance config dir for the NEW restored instance. 0700 —
+    // pgbackrest.conf carries S3 credentials.
     // pgbackrest.conf uses the SOURCE name so the repo path matches.
     let root = state_root
         .join("instances")
         .join(&args.as_name)
         .join("conf");
-    std::fs::create_dir_all(&root).map_err(|e| PgForgeError::Io {
-        path: root.clone(),
-        source: e,
-    })?;
+    crate::util::fs::create_secret_dir(&root)?;
     let postgresql_conf = root.join("postgresql.conf");
     let pg_hba = root.join("pg_hba.conf");
     let pgbackrest_conf = root.join("pgbackrest.conf");
@@ -108,14 +106,11 @@ pub async fn run_with_engine<E: DockerEngine>(
         path: pg_hba.clone(),
         source: e,
     })?;
-    std::fs::write(
+    // pgbackrest.conf carries S3 access_key + secret_key.
+    crate::util::fs::write_secret(
         &pgbackrest_conf,
         generate_pgbackrest_conf(&args.source, &s3),
-    )
-    .map_err(|e| PgForgeError::Io {
-        path: pgbackrest_conf.clone(),
-        source: e,
-    })?;
+    )?;
     std::fs::write(
         &entrypoint,
         generate_restore_entrypoint(args.target_time.as_deref()),
