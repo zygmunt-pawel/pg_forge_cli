@@ -17,10 +17,15 @@ pub fn generate_postgresql_conf_with_archive(
     with_archive: bool,
 ) -> String {
     let t = preset.tuning();
-    let wal_sync_method = match platform {
-        Platform::MacOs => "fsync_writethrough",
-        Platform::Linux => "fdatasync",
-    };
+    // Postgres runs INSIDE a Linux container regardless of the host. The
+    // `fsync_writethrough` value (which maps to macOS's F_FULLFSYNC) is
+    // rejected by Linux postgres as an unknown setting. On Docker Desktop /
+    // OrbStack the container's filesystem is the Linux VM's anyway, so
+    // there is no F_FULLFSYNC path even on a macOS host; `fdatasync` is
+    // the only sensible value. We keep the `platform` parameter for
+    // potential future per-host tuning (e.g. shared_buffers heuristics).
+    let _ = platform;
+    let wal_sync_method = "fdatasync";
     let archive_block = if with_archive {
         r#"# ----- Archiving (pgBackRest, async push to S3) -----------------------------
 archive_mode = on
