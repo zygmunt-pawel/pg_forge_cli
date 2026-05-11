@@ -12,6 +12,7 @@ use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::ports::{TcpProbe, allocate_port};
 use crate::postgres::conf::generate_postgresql_conf;
 use crate::postgres::hba::generate_pg_hba;
+use crate::postgres::init_sql::generate_init_sql;
 use crate::state::instance::InstanceState;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -34,6 +35,7 @@ pub struct ConfigLayout {
     pub postgresql_conf: PathBuf,
     pub pg_hba: PathBuf,
     pub pgbackrest_conf: PathBuf,
+    pub init_sql: PathBuf,
 }
 
 impl ConfigLayout {
@@ -43,6 +45,7 @@ impl ConfigLayout {
             postgresql_conf: root.join("postgresql.conf"),
             pg_hba: root.join("pg_hba.conf"),
             pgbackrest_conf: root.join("pgbackrest.conf"),
+            init_sql: root.join("init").join("01-pgforge-bootstrap.sql"),
             root,
         }
     }
@@ -108,6 +111,10 @@ pub async fn run_with_engine<E: DockerEngine>(
         .map_err(|e| PgForgeError::Io { path: layout.pg_hba.clone(), source: e })?;
     std::fs::write(&layout.pgbackrest_conf, generate_pgbackrest_conf(&args.name, &s3))
         .map_err(|e| PgForgeError::Io { path: layout.pgbackrest_conf.clone(), source: e })?;
+    let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&init_dir).map_err(|e| PgForgeError::Io { path: init_dir.clone(), source: e })?;
+    std::fs::write(&layout.init_sql, generate_init_sql(&args.pgbackrest_password))
+        .map_err(|e| PgForgeError::Io { path: layout.init_sql.clone(), source: e })?;
 
     // 3. Make sure the per-version image exists.
     docker
@@ -141,6 +148,11 @@ pub async fn run_with_engine<E: DockerEngine>(
         BindMount {
             host_path: layout.pgbackrest_conf.clone(),
             container_path: "/etc/pgbackrest/pgbackrest.conf".into(),
+            read_only: true,
+        },
+        BindMount {
+            host_path: layout.init_sql.clone(),
+            container_path: "/docker-entrypoint-initdb.d/01-pgforge-bootstrap.sql".into(),
             read_only: true,
         },
     ];
@@ -235,6 +247,10 @@ mod tests {
         assert_eq!(
             layout.pgbackrest_conf,
             PathBuf::from("/state/instances/billing/conf/pgbackrest.conf"),
+        );
+        assert_eq!(
+            layout.init_sql,
+            PathBuf::from("/state/instances/billing/conf/init/01-pgforge-bootstrap.sql"),
         );
     }
 
