@@ -184,11 +184,18 @@ pub async fn run_with_engine<E: DockerEngine>(
     let volume_name = spec.volumes[0].volume_name.clone();
     let id = docker.create_container(&spec).await?;
 
-    // From here on, any failure should clean up the half-created container + volume.
+    // From here on, any failure should clean up the half-created container + volume + conf dir.
+    let conf_dir = layout.root.clone();
     match post_create_steps(docker, &id, &args, host_port, &state_root).await {
         Ok(state) => Ok(state),
         Err(e) => {
-            crate::docker::cleanup::cleanup_partial(docker, &container_name, &volume_name).await;
+            crate::docker::cleanup::cleanup_partial(
+                docker,
+                &container_name,
+                &volume_name,
+                &conf_dir,
+            )
+            .await;
             Err(e)
         }
     }

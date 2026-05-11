@@ -230,11 +230,12 @@ pub async fn run_with_engine<E: DockerEngine>(
     };
     let id = docker.create_container(&spec).await?;
 
+    let conf_dir = root.clone();
     let result = post_create_steps(docker, &id, &args, source, host_port, &state_root).await;
     match result {
         Ok(state) => Ok(state),
         Err(e) => {
-            cleanup_partial(docker, &container_name, &volume_name).await;
+            cleanup_partial(docker, &container_name, &volume_name, &conf_dir).await;
             Err(e)
         }
     }
