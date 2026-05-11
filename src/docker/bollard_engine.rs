@@ -170,13 +170,18 @@ impl DockerEngine for BollardEngine {
             ..Default::default()
         };
 
-        let cfg = ContainerCreateBody {
+        let mut cfg = ContainerCreateBody {
             image: Some(spec.image.clone()),
             env: Some(env),
             exposed_ports: Some(exposed_ports),
             host_config: Some(host_config),
             ..Default::default()
         };
+
+        if let Some(cmd) = &spec.command_override {
+            cfg.entrypoint = Some(cmd.clone());
+            cfg.cmd = None;
+        }
 
         let opts = CreateContainerOptionsBuilder::default()
             .name(spec.container_name.as_str())
@@ -221,19 +226,98 @@ impl DockerEngine for BollardEngine {
         Ok(!list.is_empty())
     }
 
-    async fn exec(&self, _id: &str, _cmd: &[&str]) -> Result<crate::docker::engine::ExecOutput> {
-        unimplemented!("filled in Plan 2 Task 3")
+    async fn exec(&self, id: &str, cmd: &[&str]) -> Result<crate::docker::engine::ExecOutput> {
+        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+        use bollard::container::LogOutput;
+        use crate::docker::engine::ExecOutput;
+
+        let create = self
+            .docker
+            .create_exec(
+                id,
+                CreateExecOptions {
+                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("create_exec: {e}")))?;
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        match self
+            .docker
+            .start_exec(&create.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("start_exec: {e}")))?
+        {
+            StartExecResults::Attached { mut output, .. } => {
+                while let Some(chunk) = output.next().await {
+                    match chunk {
+                        Ok(LogOutput::StdOut { message }) => {
+                            stdout.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        Ok(LogOutput::StdErr { message }) => {
+                            stderr.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        Ok(LogOutput::Console { message }) => {
+                            stdout.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        Ok(_) => {}
+                        Err(e) => return Err(PgForgeError::Docker(format!("exec stream: {e}"))),
+                    }
+                }
+            }
+            StartExecResults::Detached => {}
+        }
+
+        let inspect = self
+            .docker
+            .inspect_exec(&create.id)
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("inspect_exec: {e}")))?;
+        let exit_code = inspect.exit_code.unwrap_or(-1);
+        Ok(ExecOutput { stdout, stderr, exit_code })
     }
 
-    async fn stop_container(&self, _id: &str) -> Result<()> {
-        unimplemented!("filled in Plan 2 Task 3")
+    async fn stop_container(&self, id: &str) -> Result<()> {
+        use bollard::query_parameters::StopContainerOptionsBuilder;
+        let opts = StopContainerOptionsBuilder::default().t(10).build();
+        self.docker
+            .stop_container(id, Some(opts))
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("stop_container({id}): {e}")))
     }
 
     async fn wait_for_container_running(
         &self,
-        _id: &str,
-        _timeout: std::time::Duration,
+        id: &str,
+        timeout: std::time::Duration,
     ) -> Result<()> {
-        unimplemented!("filled in Plan 2 Task 3")
+        let start = std::time::Instant::now();
+        loop {
+            let inspect = self
+                .docker
+                .inspect_container(id, None)
+                .await
+                .map_err(|e| PgForgeError::Docker(format!("inspect_container: {e}")))?;
+            let running = inspect
+                .state
+                .as_ref()
+                .and_then(|s| s.running)
+                .unwrap_or(false);
+            if running {
+                return Ok(());
+            }
+            if start.elapsed() >= timeout {
+                return Err(PgForgeError::Docker(format!(
+                    "container {id} did not reach Running state within {timeout:?}"
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 }
