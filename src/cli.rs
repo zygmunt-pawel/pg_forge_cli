@@ -21,6 +21,11 @@ pub enum Command {
         #[arg(long)]
         label: Option<String>,
     },
+    /// List snapshots for an instance.
+    Snapshots {
+        #[arg(long)]
+        name: String,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -67,6 +72,24 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 "Snapshot taken: {} (label={:?}, taken_at={})",
                 rec.label, rec.user_label, rec.taken_at
             );
+            Ok(())
+        }
+        Some(Command::Snapshots { name }) => {
+            let snaps = crate::commands::snapshots::run(&name, None)?;
+            if snaps.is_empty() {
+                println!("No snapshots for {name}.");
+            } else {
+                println!("{:<24}  {:<6}  {:<22}  {}", "label", "kind", "taken_at", "user_label");
+                for s in snaps {
+                    println!(
+                        "{:<24}  {:<6?}  {:<22}  {}",
+                        s.label,
+                        s.kind,
+                        s.taken_at,
+                        s.user_label.as_deref().unwrap_or("-")
+                    );
+                }
+            }
             Ok(())
         }
         Some(Command::Create {
