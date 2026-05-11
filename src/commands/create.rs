@@ -196,43 +196,13 @@ pub async fn run_with_engine<E: DockerEngine>(
             pg_version: args.pg_version,
             host_port,
         },
-        created_at: now_rfc3339(),
+        created_at: crate::time::now_iso(),
     };
     state.save_under(&state_root)?;
 
     Ok(state)
 }
 
-fn now_rfc3339() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // Cheap ISO-8601 stamp without pulling chrono. Resolution: seconds, UTC.
-    let days = secs / 86400;
-    let rem = secs % 86400;
-    let hh = rem / 3600;
-    let mm = (rem % 3600) / 60;
-    let ss = rem % 60;
-    let (y, m, d) = days_to_ymd(days as i64);
-    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
-}
-
-fn days_to_ymd(days_from_epoch: i64) -> (i64, u32, u32) {
-    // Civil-from-days algorithm by Howard Hinnant (public domain).
-    let z = days_from_epoch + 719468;
-    let era = if z >= 0 { z / 146097 } else { (z - 146096) / 146097 };
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
 
 #[cfg(test)]
 mod tests {
@@ -329,11 +299,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn now_rfc3339_starts_with_2_and_ends_with_z() {
-        let s = now_rfc3339();
-        assert!(s.starts_with('2'));
-        assert!(s.ends_with('Z'));
-        assert_eq!(s.len(), 20);
-    }
 }
