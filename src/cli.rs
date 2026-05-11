@@ -50,6 +50,13 @@ pub enum Command {
         #[arg(long)]
         name: String,
     },
+    /// Recreate the container for an existing instance using current
+    /// pgforge configs; keeps the data volume. Use after upgrading pgforge
+    /// to apply new hardening to pre-existing instances.
+    Rotate {
+        #[arg(long)]
+        name: String,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -162,6 +169,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("Reconfigured {name}.");
+            Ok(())
+        }
+        Some(Command::Rotate { name }) => {
+            crate::commands::rotate::run(crate::commands::rotate::RotateArgs {
+                name: name.clone(),
+                override_state_root: None,
+            })
+            .await?;
+            println!("Rotated {name}. Container recreated with current configs; volume retained.");
             Ok(())
         }
         Some(Command::Create {
