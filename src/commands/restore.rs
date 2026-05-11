@@ -212,7 +212,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     docker
         .wait_for_container_running(&id, std::time::Duration::from_secs(30))
         .await?;
-    wait_for_pg_ready_long(docker, &id).await?;
+    crate::docker::wait::wait_for_pg_ready(docker, &id, 600).await?;
 
     // 5. Persist state for the new instance.
     let state = InstanceState {
@@ -230,19 +230,4 @@ pub async fn run_with_engine<E: DockerEngine>(
     };
     state.save_under(&state_root)?;
     Ok(state)
-}
-
-async fn wait_for_pg_ready_long<E: DockerEngine>(docker: &E, id: &str) -> Result<()> {
-    for _ in 0..600 {
-        let out = docker
-            .exec(id, &["pg_isready", "-h", "/var/run/postgresql"])
-            .await?;
-        if out.exit_code == 0 {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-    Err(PgForgeError::Docker(format!(
-        "container {id}: restored postgres did not accept connections within 10 minutes"
-    )))
 }
