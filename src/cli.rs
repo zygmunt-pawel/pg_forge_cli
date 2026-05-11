@@ -38,6 +38,11 @@ pub enum Command {
         #[arg(long)]
         target_time: Option<String>,
     },
+    /// Regenerate pg_hba.conf for an instance and reload PG (no restart).
+    Reconfigure {
+        #[arg(long)]
+        name: String,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -121,6 +126,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 "Restored instance ready:\n  postgresql://{}:***@127.0.0.1:{}/{}",
                 i.app_user, i.host_port, i.db_name
             );
+            Ok(())
+        }
+        Some(Command::Reconfigure { name }) => {
+            crate::commands::reconfigure::run(crate::commands::reconfigure::ReconfigureArgs {
+                instance: name.clone(),
+                override_state_root: None,
+            })
+            .await?;
+            println!("Reconfigured {name}.");
             Ok(())
         }
         Some(Command::Create {
