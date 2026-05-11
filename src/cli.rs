@@ -26,6 +26,18 @@ pub enum Command {
         #[arg(long)]
         name: String,
     },
+    /// Restore a backup of <source> as a NEW instance alongside it.
+    Restore {
+        /// Source instance name (whose backups to restore from).
+        #[arg(long)]
+        source: String,
+        /// New instance name to create.
+        #[arg(long = "as")]
+        as_: String,
+        /// Optional RFC3339 target time. Without it, the latest backup is used.
+        #[arg(long)]
+        target_time: Option<String>,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -90,6 +102,25 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                     );
                 }
             }
+            Ok(())
+        }
+        Some(Command::Restore {
+            source,
+            as_,
+            target_time,
+        }) => {
+            let state = crate::commands::restore::run(crate::commands::restore::RestoreArgs {
+                source,
+                as_name: as_,
+                target_time,
+                override_state_root: None,
+            })
+            .await?;
+            let i = &state.instance;
+            println!(
+                "Restored instance ready:\n  postgresql://{}:***@127.0.0.1:{}/{}",
+                i.app_user, i.host_port, i.db_name
+            );
             Ok(())
         }
         Some(Command::Create {
