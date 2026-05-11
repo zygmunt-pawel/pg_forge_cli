@@ -1,4 +1,4 @@
-use anyhow::Result;
+use pgforge::error::Result;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
