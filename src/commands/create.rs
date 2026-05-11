@@ -53,8 +53,6 @@ impl ConfigLayout {
 
 /// Top-level entry called by main.rs / CLI.
 pub async fn run(args: CreateArgs) -> Result<InstanceState> {
-    Instance::validate_name(&args.name)?;
-
     let state_root = args
         .override_state_root
         .clone()
@@ -66,10 +64,6 @@ pub async fn run(args: CreateArgs) -> Result<InstanceState> {
         .ok_or_else(|| PgForgeError::Anyhow(anyhow::anyhow!(
             "S3 settings missing in global config (~/.config/pgforge/config.toml). Add an [s3] section."
         )))?;
-
-    if InstanceState::exists_under(&state_root, &args.name) {
-        return Err(PgForgeError::InstanceExists(args.name.clone()));
-    }
 
     let docker = BollardEngine::connect()?;
     run_with_engine(args, &docker, state_root, global_cfg, s3.clone()).await
@@ -83,6 +77,18 @@ pub async fn run_with_engine<E: DockerEngine>(
     global_cfg: GlobalConfig,
     s3: crate::pgbackrest::conf::S3Settings,
 ) -> Result<InstanceState> {
+    // Guards — must run before any port allocation or file writes.
+    Instance::validate_name(&args.name)?;
+
+    if InstanceState::exists_under(&state_root, &args.name) {
+        return Err(PgForgeError::InstanceExists(args.name.clone()));
+    }
+
+    let container_name = format!("pgforge_{}", args.name);
+    if docker.container_exists(&container_name).await? {
+        return Err(PgForgeError::InstanceExists(args.name.clone()));
+    }
+
     let plat = current_platform();
     let tuning = args.preset.tuning();
 
@@ -231,7 +237,76 @@ fn days_to_ymd(days_from_epoch: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::global::GlobalConfig;
+    use crate::docker::engine::{BuildImageSpec, CreateContainerSpec, DockerEngine};
+    use crate::pgbackrest::conf::S3Settings;
+    use async_trait::async_trait;
     use std::path::Path;
+    use std::sync::Mutex;
+
+    struct RecordingEngine {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    #[async_trait]
+    impl DockerEngine for RecordingEngine {
+        async fn build_image(&self, _: &BuildImageSpec) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("build_image");
+            Ok(())
+        }
+        async fn ensure_network(&self, _: &str) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("ensure_network");
+            Ok(())
+        }
+        async fn create_container(&self, _: &CreateContainerSpec) -> crate::error::Result<String> {
+            self.calls.lock().unwrap().push("create_container");
+            Ok("dummy_id".into())
+        }
+        async fn start_container(&self, _: &str) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("start_container");
+            Ok(())
+        }
+        async fn container_exists(&self, _: &str) -> crate::error::Result<bool> {
+            self.calls.lock().unwrap().push("container_exists");
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_name_short_circuits_before_any_docker_call() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let engine = RecordingEngine { calls: Mutex::new(Vec::new()) };
+        let s3 = S3Settings {
+            bucket: "b".into(),
+            region: "r".into(),
+            endpoint: "e".into(),
+            access_key: "a".into(),
+            secret_key: "s".into(),
+        };
+        let cfg = GlobalConfig { s3: Some(s3.clone()), ..Default::default() };
+        let res = run_with_engine(
+            CreateArgs {
+                name: "INVALID-UPPERCASE".into(),
+                preset: crate::domain::preset::Preset::Tiny,
+                pg_version: 18,
+                app_user: "leads".into(),
+                app_password: "pw".into(),
+                pgbackrest_password: "rpw".into(),
+                override_state_root: Some(tmp.path().to_path_buf()),
+            },
+            &engine,
+            tmp.path().to_path_buf(),
+            cfg,
+            s3,
+        )
+        .await;
+        assert!(res.is_err());
+        assert!(
+            engine.calls.lock().unwrap().is_empty(),
+            "no docker call should happen on invalid name, got {:?}",
+            engine.calls.lock().unwrap()
+        );
+    }
 
     #[test]
     fn config_layout_is_per_instance() {
