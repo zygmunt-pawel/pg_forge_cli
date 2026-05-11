@@ -38,6 +38,13 @@ pub enum Command {
         #[arg(long)]
         target_time: Option<String>,
     },
+    /// Clone a running instance as a NEW sibling via pg_basebackup.
+    Clone {
+        #[arg(long)]
+        source: String,
+        #[arg(long = "as")]
+        as_: String,
+    },
     /// Regenerate pg_hba.conf for an instance and reload PG (no restart).
     Reconfigure {
         #[arg(long)]
@@ -124,6 +131,20 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let i = &state.instance;
             println!(
                 "Restored instance ready:\n  postgresql://{}:***@127.0.0.1:{}/{}",
+                i.app_user, i.host_port, i.db_name
+            );
+            Ok(())
+        }
+        Some(Command::Clone { source, as_ }) => {
+            let state = crate::commands::clone::run(crate::commands::clone::CloneArgs {
+                source,
+                as_name: as_,
+                override_state_root: None,
+            })
+            .await?;
+            let i = &state.instance;
+            println!(
+                "Clone ready:\n  postgresql://{}:***@127.0.0.1:{}/{}",
                 i.app_user, i.host_port, i.db_name
             );
             Ok(())
