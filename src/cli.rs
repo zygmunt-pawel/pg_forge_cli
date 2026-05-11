@@ -28,6 +28,11 @@ pub enum Command {
     },
     /// List all managed instances with status.
     Ls,
+    /// Live metrics for one instance: CPU, memory, connections, sizes.
+    Status {
+        #[arg(long)]
+        name: String,
+    },
     /// Restore a backup of <source> as a NEW instance alongside it.
     Restore {
         /// Source instance name (whose backups to restore from).
@@ -179,6 +184,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             print!("{}", crate::commands::ls::render_table(&rows));
+            Ok(())
+        }
+        Some(Command::Status { name }) => {
+            let s = crate::commands::status::run(crate::commands::status::StatusArgs {
+                name,
+                override_state_root: None,
+            })
+            .await?;
+            print!("{}", crate::commands::status::render(&s));
             Ok(())
         }
         Some(Command::Rotate { name }) => {
