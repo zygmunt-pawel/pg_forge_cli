@@ -31,9 +31,20 @@ fn entrypoint_skips_restore_if_pgdata_already_populated() {
 }
 
 #[test]
-fn entrypoint_execs_official_postgres_entrypoint_at_end() {
+fn entrypoint_execs_official_postgres_entrypoint_with_bindmount_config_flags() {
+    // Without -c config_file / -c hba_file, postgres reads only PGDATA's
+    // initdb-defaults — our bind-mounted hardened postgresql.conf and
+    // pg_hba.conf are silently ignored.
     let script = generate_restore_entrypoint(None);
     assert!(script.contains("exec docker-entrypoint.sh postgres"));
+    assert!(
+        script.contains("config_file=/etc/postgresql/postgresql.conf"),
+        "must pass config_file flag, got:\n{script}"
+    );
+    assert!(
+        script.contains("hba_file=/etc/postgresql/pg_hba.conf"),
+        "must pass hba_file flag, got:\n{script}"
+    );
 }
 
 #[test]

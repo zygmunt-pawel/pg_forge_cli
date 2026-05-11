@@ -24,7 +24,9 @@ if [ ! -f "$PGDATA/PG_VERSION" ]; then
     su - postgres -c 'pgbackrest --stanza=main restore --pg1-path=/var/lib/postgresql/data/pgdata{target_args}'
 fi
 
-exec docker-entrypoint.sh postgres
+exec docker-entrypoint.sh postgres \
+    -c config_file=/etc/postgresql/postgresql.conf \
+    -c hba_file=/etc/postgresql/pg_hba.conf
 "#,
         target_args = target_args
     )

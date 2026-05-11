@@ -46,7 +46,9 @@ if [ ! -f "$MARKER" ]; then
     chown postgres:postgres "$MARKER"
 fi
 
-exec docker-entrypoint.sh postgres
+exec docker-entrypoint.sh postgres \
+    -c config_file=/etc/postgresql/postgresql.conf \
+    -c hba_file=/etc/postgresql/pg_hba.conf
 "#,
         source = source_container
     )
