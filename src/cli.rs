@@ -120,11 +120,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Some(Command::Snapshots { name }) => {
             let snaps = crate::commands::snapshots::run(&name, None)?;
-            if snaps.is_empty() {
+            let had_snaps = !snaps.is_empty();
+            if !had_snaps {
                 println!("No snapshots for {name}.");
             } else {
                 println!("{:<24}  {:<6}  {:<22}  {}", "label", "kind", "taken_at", "user_label");
-                for s in snaps {
+                for s in &snaps {
                     println!(
                         "{:<24}  {:<6?}  {:<22}  {}",
                         s.label,
@@ -133,6 +134,24 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                         s.user_label.as_deref().unwrap_or("-")
                     );
                 }
+            }
+            // PITR window — best-effort. Silently skip if the container is
+            // down (snapshots list still printed) or pgbackrest info fails.
+            let docker = crate::docker::bollard_engine::BollardEngine::connect()?;
+            let state_root = crate::state::instance::InstanceState::default_state_root();
+            match crate::commands::snapshots::pitr_window(&name, &docker, &state_root).await {
+                Ok(w) if w.earliest.is_some() && w.latest.is_some() => {
+                    println!(
+                        "PITR window: {} .. {}",
+                        w.earliest.unwrap(),
+                        w.latest.unwrap()
+                    );
+                }
+                Ok(_) if had_snaps => {
+                    println!("PITR window: (unavailable — container not running, or pgbackrest info empty)");
+                }
+                Ok(_) => {} // no snaps + no window — we already said "No snapshots".
+                Err(e) => eprintln!("(could not derive PITR window: {e})"),
             }
             Ok(())
         }
