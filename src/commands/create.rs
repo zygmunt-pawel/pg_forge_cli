@@ -10,7 +10,6 @@ use crate::domain::preset::Preset;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::ports::{TcpProbe, allocate_port};
-use crate::postgres::conf::generate_postgresql_conf;
 use crate::postgres::hba::generate_pg_hba;
 use crate::postgres::init_sql::generate_init_sql;
 use crate::state::instance::InstanceState;
@@ -28,6 +27,11 @@ pub struct CreateArgs {
     /// When None, uses GlobalConfig::default_path() and InstanceState::default_state_root().
     /// Tests set this to a TempDir.
     pub override_state_root: Option<PathBuf>,
+    /// Local-only mode: skip pgbackrest setup entirely. The instance has no
+    /// S3 backups, no archive_mode, no stanza-create. `pgforge snapshot`,
+    /// `pgforge restore`, `pgforge clone` will refuse to operate on it.
+    /// Intended for dev / test instances where S3 is unavailable.
+    pub no_backup: bool,
 }
 
 pub struct ConfigLayout {
@@ -58,27 +62,41 @@ pub async fn run(args: CreateArgs) -> Result<InstanceState> {
         .clone()
         .unwrap_or_else(InstanceState::default_state_root);
     let global_cfg = GlobalConfig::load()?;
-    let s3 = global_cfg
-        .s3
-        .clone()
-        .ok_or_else(|| PgForgeError::Anyhow(anyhow::anyhow!(
-            "S3 settings missing in global config (~/.config/pgforge/config.toml). Add an [s3] section."
-        )))?;
+    // S3 is required for backup-enabled instances (pgbackrest pushes WAL
+    // there); for --no-backup we accept the global config without it.
+    let s3 = if args.no_backup {
+        global_cfg.s3.clone()
+    } else {
+        Some(global_cfg.s3.clone().ok_or_else(|| {
+            PgForgeError::Anyhow(anyhow::anyhow!(
+                "S3 settings missing in global config (~/.config/pgforge/config.toml). \
+                 Add an [s3] section, or use --no-backup for a local-only instance."
+            ))
+        })?)
+    };
 
     let docker = BollardEngine::connect()?;
-    run_with_engine(args, &docker, state_root, global_cfg, s3.clone()).await
+    run_with_engine(args, &docker, state_root, global_cfg, s3).await
 }
 
 /// Inner function — engine injected so integration tests can swap it.
+/// `s3` is `Some` for backup-enabled instances, `None` for `--no-backup`.
 pub async fn run_with_engine<E: DockerEngine>(
     args: CreateArgs,
     docker: &E,
     state_root: PathBuf,
     global_cfg: GlobalConfig,
-    s3: crate::pgbackrest::conf::S3Settings,
+    s3: Option<crate::pgbackrest::conf::S3Settings>,
 ) -> Result<InstanceState> {
     // Guards — must run before any port allocation or file writes.
     Instance::validate_name(&args.name)?;
+    if !args.no_backup && args.pgbackrest_password.is_empty() {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "pgbackrest_password is required for backup-enabled instances. \
+             Set PGFORGE_PGBACKREST_PASSWORD or pass --pgbackrest-password, \
+             or use --no-backup for a local-only instance."
+        )));
+    }
 
     if InstanceState::exists_under(&state_root, &args.name) {
         return Err(PgForgeError::InstanceExists(args.name.clone()));
@@ -107,19 +125,35 @@ pub async fn run_with_engine<E: DockerEngine>(
 
     // 2. Render configs and write them to the per-instance config dir on host.
     // Conf root is 0700 — contains plaintext role password (init_sql) and S3
-    // credentials (pgbackrest.conf).
+    // credentials (pgbackrest.conf), when backups are enabled.
     let layout = ConfigLayout::for_instance(&state_root, &args.name);
     crate::util::fs::create_secret_dir(&layout.root)?;
-    std::fs::write(&layout.postgresql_conf, generate_postgresql_conf(args.preset, plat))
-        .map_err(|e| PgForgeError::Io { path: layout.postgresql_conf.clone(), source: e })?;
+    let with_archive = !args.no_backup;
+    std::fs::write(
+        &layout.postgresql_conf,
+        crate::postgres::conf::generate_postgresql_conf_with_archive(args.preset, plat, with_archive),
+    )
+    .map_err(|e| PgForgeError::Io { path: layout.postgresql_conf.clone(), source: e })?;
     std::fs::write(&layout.pg_hba, generate_pg_hba(&args.name, &args.app_user))
         .map_err(|e| PgForgeError::Io { path: layout.pg_hba.clone(), source: e })?;
-    // pgbackrest.conf carries S3 access_key + secret_key.
-    crate::util::fs::write_secret(&layout.pgbackrest_conf, generate_pgbackrest_conf(&args.name, &s3))?;
-    let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
-    crate::util::fs::create_secret_dir(&init_dir)?;
-    // init_sql carries CREATE ROLE … PASSWORD '…' in plaintext.
-    crate::util::fs::write_secret(&layout.init_sql, generate_init_sql(&args.pgbackrest_password))?;
+    if let Some(s3) = s3.as_ref() {
+        // pgbackrest.conf carries S3 access_key + secret_key.
+        crate::util::fs::write_secret(
+            &layout.pgbackrest_conf,
+            generate_pgbackrest_conf(&args.name, s3),
+        )?;
+        let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
+        crate::util::fs::create_secret_dir(&init_dir)?;
+        // init_sql carries CREATE ROLE … PASSWORD '…' in plaintext.
+        crate::util::fs::write_secret(
+            &layout.init_sql,
+            generate_init_sql(&args.pgbackrest_password),
+        )?;
+    }
+    // For --no-backup we skip pgbackrest.conf and init_sql entirely. The
+    // pg_hba file still references pgbackrest/pgreplica roles in its `local`
+    // and `host replication` lines, but they simply won't match anything
+    // since the roles never get created — that's a no-op, not an error.
 
     // 3. Make sure the per-version image exists.
     docker
@@ -139,7 +173,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     env.insert("POSTGRES_DB".into(), args.name.clone());
     env.insert("PGDATA".into(), "/var/lib/postgresql/data/pgdata".into());
 
-    let binds = vec![
+    let mut binds = vec![
         BindMount {
             host_path: layout.postgresql_conf.clone(),
             container_path: "/etc/postgresql/postgresql.conf".into(),
@@ -150,17 +184,19 @@ pub async fn run_with_engine<E: DockerEngine>(
             container_path: "/etc/postgresql/pg_hba.conf".into(),
             read_only: true,
         },
-        BindMount {
+    ];
+    if !args.no_backup {
+        binds.push(BindMount {
             host_path: layout.pgbackrest_conf.clone(),
             container_path: "/etc/pgbackrest/pgbackrest.conf".into(),
             read_only: true,
-        },
-        BindMount {
+        });
+        binds.push(BindMount {
             host_path: layout.init_sql.clone(),
             container_path: "/docker-entrypoint-initdb.d/01-pgforge-bootstrap.sql".into(),
             read_only: true,
-        },
-    ];
+        });
+    }
     let volumes = vec![NamedVolume {
         volume_name: format!("pgforge_data_{}", args.name),
         container_path: "/var/lib/postgresql/data".into(),
@@ -246,20 +282,25 @@ async fn bootstrap_create<E: DockerEngine>(
         .wait_for_container_running(id, std::time::Duration::from_secs(30))
         .await?;
     crate::docker::wait::wait_for_pg_ready(docker, id, 30).await?;
-    let stanza = docker
-        .exec(
-            id,
-            &[
-                "su", "-", "postgres", "-c",
-                "pgbackrest --stanza=main stanza-create",
-            ],
-        )
-        .await?;
-    if stanza.exit_code != 0 {
-        return Err(PgForgeError::Docker(format!(
-            "pgbackrest stanza-create failed (exit {}): stdout={:?} stderr={:?}",
-            stanza.exit_code, stanza.stdout, stanza.stderr
-        )));
+    // pgbackrest stanza-create is the gate that turns archive_command from
+    // a doomed retry-storm into a working WAL pipeline. Skip it when there
+    // is no pgbackrest at all (--no-backup).
+    if !args.no_backup {
+        let stanza = docker
+            .exec(
+                id,
+                &[
+                    "su", "-", "postgres", "-c",
+                    "pgbackrest --stanza=main stanza-create",
+                ],
+            )
+            .await?;
+        if stanza.exit_code != 0 {
+            return Err(PgForgeError::Docker(format!(
+                "pgbackrest stanza-create failed (exit {}): stdout={:?} stderr={:?}",
+                stanza.exit_code, stanza.stdout, stanza.stderr
+            )));
+        }
     }
 
     Ok(InstanceState {
@@ -272,6 +313,7 @@ async fn bootstrap_create<E: DockerEngine>(
             preset: args.preset,
             pg_version: args.pg_version,
             host_port,
+            backup_enabled: !args.no_backup,
         },
         created_at: crate::time::now_iso(),
     })
@@ -369,11 +411,12 @@ mod tests {
                 app_password: "pw".into(),
                 pgbackrest_password: "rpw".into(),
                 override_state_root: Some(tmp.path().to_path_buf()),
+                no_backup: false,
             },
             &engine,
             tmp.path().to_path_buf(),
             cfg,
-            s3,
+            Some(s3),
         )
         .await;
         assert!(res.is_err());

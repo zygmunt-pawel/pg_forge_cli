@@ -2,12 +2,35 @@ use crate::domain::platform::Platform;
 use crate::domain::preset::Preset;
 
 /// Render a complete `postgresql.conf` for the given preset on the given host
-/// platform. Pure function — no IO, deterministic output.
+/// platform. Pure function — no IO, deterministic output. WAL archiving to
+/// S3/pgbackrest is enabled by default; pass false to `with_archive` for
+/// `--no-backup` (local dev) instances.
 pub fn generate_postgresql_conf(preset: Preset, platform: Platform) -> String {
+    generate_postgresql_conf_with_archive(preset, platform, true)
+}
+
+/// Variant that lets the caller disable archiving for instances created
+/// without pgbackrest (e.g. `pgforge create --no-backup`).
+pub fn generate_postgresql_conf_with_archive(
+    preset: Preset,
+    platform: Platform,
+    with_archive: bool,
+) -> String {
     let t = preset.tuning();
     let wal_sync_method = match platform {
         Platform::MacOs => "fsync_writethrough",
         Platform::Linux => "fdatasync",
+    };
+    let archive_block = if with_archive {
+        r#"# ----- Archiving (pgBackRest, async push to S3) -----------------------------
+archive_mode = on
+archive_command = 'pgbackrest --stanza=main archive-push %p'
+archive_timeout = 60"#
+    } else {
+        r#"# ----- Archiving -------------------------------------------------------------
+# Disabled: instance created with --no-backup (local dev / test). pgbackrest
+# is not configured, so archive_command would fail every WAL segment.
+archive_mode = off"#
     };
 
     format!(
@@ -42,10 +65,7 @@ min_wal_size = 256MB
 checkpoint_timeout = 15min
 checkpoint_completion_target = 0.9
 
-# ----- Archiving (pgBackRest, async push to S3) -----------------------------
-archive_mode = on
-archive_command = 'pgbackrest --stanza=main archive-push %p'
-archive_timeout = 60
+{archive_block}
 
 # ----- Security -------------------------------------------------------------
 ssl = off

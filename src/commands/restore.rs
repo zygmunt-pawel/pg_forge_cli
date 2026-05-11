@@ -45,6 +45,13 @@ pub async fn run(args: RestoreArgs) -> Result<InstanceState> {
 
     // Source must exist; new name must NOT.
     let source = InstanceState::load_under(&state_root, &args.source)?;
+    if !source.instance.backup_enabled {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "source instance {:?} was created with --no-backup; there are no \
+             backups in S3 to restore from.",
+            args.source
+        )));
+    }
     if InstanceState::exists_under(&state_root, &args.as_name) {
         return Err(PgForgeError::InstanceExists(args.as_name.clone()));
     }
@@ -266,6 +273,10 @@ async fn bootstrap_restore<E: DockerEngine>(
             preset: source.instance.preset,
             pg_version: source.instance.pg_version,
             host_port,
+            // Restored instance reuses source's pgbackrest config (see
+            // README caveat — its archive-push to source's stanza will be
+            // rejected post-promote, that's a Plan 4 known limitation).
+            backup_enabled: source.instance.backup_enabled,
         },
         created_at: crate::time::now_iso(),
     })

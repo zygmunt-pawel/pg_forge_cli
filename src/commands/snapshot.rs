@@ -19,7 +19,14 @@ pub async fn run(args: SnapshotArgs) -> Result<SnapshotRecord> {
         .override_state_root
         .clone()
         .unwrap_or_else(InstanceState::default_state_root);
-    let _ = InstanceState::load_under(&state_root, &args.instance)?; // ensures instance exists
+    let s = InstanceState::load_under(&state_root, &args.instance)?;
+    if !s.instance.backup_enabled {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "instance {:?} was created with --no-backup; pgbackrest is not \
+             configured and `pgforge snapshot` cannot operate on it.",
+            args.instance
+        )));
+    }
     let docker = BollardEngine::connect()?;
     run_with_engine(args, &docker, state_root).await
 }

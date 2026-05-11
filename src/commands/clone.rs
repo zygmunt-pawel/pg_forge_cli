@@ -41,6 +41,14 @@ pub async fn run(args: CloneArgs) -> Result<InstanceState> {
         })?
         .clone();
     let source = InstanceState::load_under(&state_root, &args.source)?;
+    if !source.instance.backup_enabled {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "source instance {:?} was created with --no-backup; it has no \
+             pgbackrest stanza, so the cloned instance couldn't archive WAL \
+             either. Recreate the source with backups enabled first.",
+            args.source
+        )));
+    }
     if InstanceState::exists_under(&state_root, &args.as_name) {
         return Err(PgForgeError::InstanceExists(args.as_name.clone()));
     }
@@ -295,6 +303,11 @@ async fn bootstrap_clone<E: DockerEngine>(
             preset: source.instance.preset,
             pg_version: source.instance.pg_version,
             host_port,
+            // A clone of a backup-enabled source is itself backup-enabled
+            // (clone.rs configures its own pgbackrest stanza in
+            // bootstrap_clone). Source must be backup-enabled to clone at
+            // all — guarded earlier in run_with_engine.
+            backup_enabled: true,
         },
         created_at: crate::time::now_iso(),
     })

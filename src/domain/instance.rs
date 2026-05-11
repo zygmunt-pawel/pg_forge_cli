@@ -15,6 +15,20 @@ pub struct Instance {
     pub preset: Preset,
     pub pg_version: u8,
     pub host_port: u16,
+    /// Whether this instance has pgbackrest archiving + S3 backups wired up.
+    /// `false` = created with `--no-backup` (local dev / test). On such
+    /// instances `pgforge snapshot`, `pgforge clone`, and `pgforge restore`
+    /// are refused — there's no archive to read from.
+    ///
+    /// `#[serde(default)]` keeps state.toml files written before this field
+    /// existed loadable (defaults to true = full pgbackrest enabled, which
+    /// is what every pre-Plan-4 instance had).
+    #[serde(default = "backup_enabled_default")]
+    pub backup_enabled: bool,
+}
+
+fn backup_enabled_default() -> bool {
+    true
 }
 
 impl Instance {

@@ -45,11 +45,12 @@ async fn clone_running_instance_is_reachable() {
             app_password: "pw".into(),
             pgbackrest_password: "rpw".into(),
             override_state_root: Some(state_root.clone()),
+            no_backup: false,
         },
         &docker,
         state_root.clone(),
         global.clone(),
-        s3.clone(),
+        Some(s3.clone()),
     )
     .await
     .expect("create source");

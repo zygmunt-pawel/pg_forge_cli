@@ -67,9 +67,15 @@ pub enum Command {
         /// App password (set via env PGFORGE_APP_PASSWORD or this flag).
         #[arg(long, env = "PGFORGE_APP_PASSWORD")]
         app_password: String,
-        /// pgbackrest replication user password.
-        #[arg(long, env = "PGFORGE_PGBACKREST_PASSWORD")]
+        /// pgbackrest replication user password. Not required with --no-backup.
+        #[arg(long, env = "PGFORGE_PGBACKREST_PASSWORD", default_value = "")]
         pgbackrest_password: String,
+        /// Skip pgbackrest setup — no S3, no WAL archiving, no snapshots,
+        /// no clone/restore. Intended for local dev / tests where S3 is
+        /// unavailable. The instance becomes a plain hardened PG with
+        /// nothing to back it up.
+        #[arg(long)]
+        no_backup: bool,
     },
 }
 
@@ -165,6 +171,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             app_user,
             app_password,
             pgbackrest_password,
+            no_backup,
         }) => {
             let state = run_create(CreateArgs {
                 name,
@@ -174,6 +181,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 app_password,
                 pgbackrest_password,
                 override_state_root: None,
+                no_backup,
             })
             .await?;
             let i = &state.instance;

@@ -45,11 +45,12 @@ async fn create_tiny_instance_then_cleanup() {
             app_password: "pw".into(),
             pgbackrest_password: "rpw".into(),
             override_state_root: Some(tmp.path().to_path_buf()),
+            no_backup: false,
         },
         &docker,
         tmp.path().to_path_buf(),
         global,
-        fake_s3(),
+        Some(fake_s3()),
     )
     .await;
 

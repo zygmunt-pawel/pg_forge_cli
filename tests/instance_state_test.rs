@@ -14,6 +14,7 @@ fn fixture(name: &str) -> InstanceState {
             preset: Preset::Tiny,
             pg_version: 18,
             host_port: 5433,
+            backup_enabled: true,
         },
         created_at: "2026-05-11T08:00:00Z".into(),
     }
@@ -64,4 +65,30 @@ fn list_returns_empty_when_state_root_missing() {
     let state_root = dir.path().join("does-not-exist");
     let names = InstanceState::list_under(&state_root).unwrap();
     assert!(names.is_empty());
+}
+
+#[test]
+fn load_legacy_state_without_backup_enabled_defaults_to_true() {
+    // Instances created before P4A-1 don't have the backup_enabled field in
+    // their state.toml. Loading them must default to true (pre-P4 instances
+    // all had pgbackrest wired up, even if it was inert pre-bind-mount-fix).
+    let dir = TempDir::new().unwrap();
+    let state_root = dir.path();
+    let instance_dir = state_root.join("instances").join("legacy");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    let legacy_toml = r#"created_at = "2026-05-11T08:00:00Z"
+
+[instance]
+name = "legacy"
+db_name = "legacy"
+app_user = "leads"
+app_password = "pw"
+pgbackrest_password = "rpw"
+preset = "tiny"
+pg_version = 18
+host_port = 5499
+"#;
+    std::fs::write(instance_dir.join("state.toml"), legacy_toml).unwrap();
+    let loaded = InstanceState::load_under(state_root, "legacy").unwrap();
+    assert!(loaded.instance.backup_enabled, "missing field must default to true");
 }
