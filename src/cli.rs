@@ -26,6 +26,8 @@ pub enum Command {
         #[arg(long)]
         name: String,
     },
+    /// List all managed instances with status.
+    Ls,
     /// Restore a backup of <source> as a NEW instance alongside it.
     Restore {
         /// Source instance name (whose backups to restore from).
@@ -169,6 +171,14 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("Reconfigured {name}.");
+            Ok(())
+        }
+        Some(Command::Ls) => {
+            let rows = crate::commands::ls::run(crate::commands::ls::LsArgs {
+                override_state_root: None,
+            })
+            .await?;
+            print!("{}", crate::commands::ls::render_table(&rows));
             Ok(())
         }
         Some(Command::Rotate { name }) => {
