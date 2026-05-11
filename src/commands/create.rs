@@ -185,6 +185,29 @@ pub async fn run_with_engine<E: DockerEngine>(
     // 6. Start it.
     docker.start_container(&id).await?;
 
+    // Wait for the container to reach Running state in Docker's eyes, then for
+    // Postgres inside it to accept local connections, then create the
+    // pgbackrest stanza so archive_command can begin pushing WAL.
+    docker
+        .wait_for_container_running(&id, std::time::Duration::from_secs(30))
+        .await?;
+    wait_for_pg_ready(docker, &id).await?;
+    let stanza = docker
+        .exec(
+            &id,
+            &[
+                "su", "-", "postgres", "-c",
+                "pgbackrest --stanza=main stanza-create",
+            ],
+        )
+        .await?;
+    if stanza.exit_code != 0 {
+        return Err(PgForgeError::Docker(format!(
+            "pgbackrest stanza-create failed (exit {}): stdout={:?} stderr={:?}",
+            stanza.exit_code, stanza.stdout, stanza.stderr
+        )));
+    }
+
     // 7. Persist state.
     let state = InstanceState {
         instance: Instance {
@@ -204,6 +227,21 @@ pub async fn run_with_engine<E: DockerEngine>(
     Ok(state)
 }
 
+
+async fn wait_for_pg_ready<E: DockerEngine>(docker: &E, id: &str) -> Result<()> {
+    for _ in 0..30 {
+        let out = docker
+            .exec(id, &["pg_isready", "-h", "/var/run/postgresql"])
+            .await?;
+        if out.exit_code == 0 {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Err(PgForgeError::Docker(format!(
+        "container {id}: postgres did not accept connections within 30s"
+    )))
+}
 
 #[cfg(test)]
 mod tests {

@@ -14,11 +14,12 @@ use tempfile::TempDir;
 
 fn fake_s3() -> S3Settings {
     S3Settings {
-        bucket: "pgforge-e2e-stub".into(),
-        region: "eu-central-1".into(),
-        endpoint: "s3.eu-central-1.amazonaws.com".into(),
-        access_key: "AKIAFAKE".into(),
-        secret_key: "secret".into(),
+        bucket: std::env::var("PGFORGE_E2E_BUCKET").unwrap_or_else(|_| "pgforge-e2e".into()),
+        region: std::env::var("PGFORGE_E2E_REGION").unwrap_or_else(|_| "eu-central-1".into()),
+        endpoint: std::env::var("PGFORGE_E2E_ENDPOINT")
+            .unwrap_or_else(|_| "s3.eu-central-1.amazonaws.com".into()),
+        access_key: std::env::var("PGFORGE_E2E_S3_KEY").unwrap_or_else(|_| "AKIAFAKE".into()),
+        secret_key: std::env::var("PGFORGE_E2E_S3_SECRET").unwrap_or_else(|_| "secret".into()),
     }
 }
 
