@@ -43,3 +43,14 @@ fn hba_rejects_default_anything_else() {
     let hba = generate_pg_hba("billing", "leads");
     assert!(hba.contains("host    all             all             all                     reject"));
 }
+
+#[test]
+fn hba_grants_host_replication_to_pgbackrest_over_samenet() {
+    // Clone uses pg_basebackup from a sibling container — host replication
+    // over the docker bridge is required.
+    let hba = generate_pg_hba("billing", "leads");
+    assert!(
+        hba.contains("host    replication     pgbackrest      samenet                 scram-sha-256"),
+        "must allow host replication from samenet, got:\n{hba}"
+    );
+}

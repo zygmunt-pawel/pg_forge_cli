@@ -15,6 +15,10 @@ local   all             {user}                                   trust
 local   replication     pgbackrest                              trust
 local   all             pgbackrest                              trust
 
+# Clone via pg_basebackup from a sibling container over the docker bridge
+# network — host replication required for `pgforge clone`.
+host    replication     pgbackrest      samenet                 scram-sha-256
+
 # App user — only inside the docker network, password required.
 host    {db}             {user}            samenet                 scram-sha-256
 
