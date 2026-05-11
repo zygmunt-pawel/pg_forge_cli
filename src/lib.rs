@@ -1,5 +1,6 @@
 //! pgforge — hardened PostgreSQL provisioner for a single host.
 
+pub mod commands;
 pub mod config;
 pub mod docker;
 pub mod domain;

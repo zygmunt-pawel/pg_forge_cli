@@ -1,0 +1,248 @@
+use crate::config::global::GlobalConfig;
+use crate::docker::bollard_engine::BollardEngine;
+use crate::docker::engine::{
+    BindMount, BuildImageSpec, CreateContainerSpec, DockerEngine, NamedVolume,
+};
+use crate::docker::image::dockerfile;
+use crate::domain::instance::Instance;
+use crate::domain::platform::current_platform;
+use crate::domain::preset::Preset;
+use crate::error::{PgForgeError, Result};
+use crate::pgbackrest::conf::generate_pgbackrest_conf;
+use crate::ports::{TcpProbe, allocate_port};
+use crate::postgres::conf::generate_postgresql_conf;
+use crate::postgres::hba::generate_pg_hba;
+use crate::state::instance::InstanceState;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct CreateArgs {
+    pub name: String,
+    pub preset: Preset,
+    pub pg_version: u8,
+    pub app_user: String,
+    pub app_password: String,
+    pub pgbackrest_password: String,
+    /// When None, uses GlobalConfig::default_path() and InstanceState::default_state_root().
+    /// Tests set this to a TempDir.
+    pub override_state_root: Option<PathBuf>,
+}
+
+pub struct ConfigLayout {
+    pub root: PathBuf,
+    pub postgresql_conf: PathBuf,
+    pub pg_hba: PathBuf,
+    pub pgbackrest_conf: PathBuf,
+}
+
+impl ConfigLayout {
+    pub fn for_instance(state_root: &Path, name: &str) -> Self {
+        let root = state_root.join("instances").join(name).join("conf");
+        Self {
+            postgresql_conf: root.join("postgresql.conf"),
+            pg_hba: root.join("pg_hba.conf"),
+            pgbackrest_conf: root.join("pgbackrest.conf"),
+            root,
+        }
+    }
+}
+
+/// Top-level entry called by main.rs / CLI.
+pub async fn run(args: CreateArgs) -> Result<InstanceState> {
+    Instance::validate_name(&args.name)?;
+
+    let state_root = args
+        .override_state_root
+        .clone()
+        .unwrap_or_else(InstanceState::default_state_root);
+    let global_cfg = GlobalConfig::load()?;
+    let s3 = global_cfg
+        .s3
+        .clone()
+        .ok_or_else(|| PgForgeError::Anyhow(anyhow::anyhow!(
+            "S3 settings missing in global config (~/.config/pgforge/config.toml). Add an [s3] section."
+        )))?;
+
+    if InstanceState::exists_under(&state_root, &args.name) {
+        return Err(PgForgeError::InstanceExists(args.name.clone()));
+    }
+
+    let docker = BollardEngine::connect()?;
+    run_with_engine(args, &docker, state_root, global_cfg, s3.clone()).await
+}
+
+/// Inner function — engine injected so integration tests can swap it.
+pub async fn run_with_engine<E: DockerEngine>(
+    args: CreateArgs,
+    docker: &E,
+    state_root: PathBuf,
+    global_cfg: GlobalConfig,
+    s3: crate::pgbackrest::conf::S3Settings,
+) -> Result<InstanceState> {
+    let plat = current_platform();
+    let tuning = args.preset.tuning();
+
+    // 1. Allocate a port avoiding ones we've handed out before.
+    let taken: HashSet<u16> = InstanceState::list_under(&state_root)?
+        .into_iter()
+        .filter_map(|n| InstanceState::load_under(&state_root, &n).ok())
+        .map(|s| s.instance.host_port)
+        .collect();
+    let host_port = allocate_port(
+        global_cfg.port_range_start,
+        global_cfg.port_range_end,
+        &taken,
+        &TcpProbe,
+    )?;
+
+    // 2. Render configs and write them to the per-instance config dir on host.
+    let layout = ConfigLayout::for_instance(&state_root, &args.name);
+    std::fs::create_dir_all(&layout.root).map_err(|e| PgForgeError::Io {
+        path: layout.root.clone(),
+        source: e,
+    })?;
+    std::fs::write(&layout.postgresql_conf, generate_postgresql_conf(args.preset, plat))
+        .map_err(|e| PgForgeError::Io { path: layout.postgresql_conf.clone(), source: e })?;
+    std::fs::write(&layout.pg_hba, generate_pg_hba(&args.name, &args.app_user))
+        .map_err(|e| PgForgeError::Io { path: layout.pg_hba.clone(), source: e })?;
+    std::fs::write(&layout.pgbackrest_conf, generate_pgbackrest_conf(&args.name, &s3))
+        .map_err(|e| PgForgeError::Io { path: layout.pgbackrest_conf.clone(), source: e })?;
+
+    // 3. Make sure the per-version image exists.
+    docker
+        .build_image(&BuildImageSpec {
+            tag: format!("pgforge/postgres:{}", args.pg_version),
+            dockerfile: dockerfile(args.pg_version),
+        })
+        .await?;
+
+    // 4. Make sure the shared docker network exists.
+    docker.ensure_network("pgforge_net").await?;
+
+    // 5. Create the container.
+    let mut env = HashMap::new();
+    env.insert("POSTGRES_USER".into(), args.app_user.clone());
+    env.insert("POSTGRES_PASSWORD".into(), args.app_password.clone());
+    env.insert("POSTGRES_DB".into(), args.name.clone());
+    env.insert("PGDATA".into(), "/var/lib/postgresql/data/pgdata".into());
+
+    let binds = vec![
+        BindMount {
+            host_path: layout.postgresql_conf.clone(),
+            container_path: "/etc/postgresql/postgresql.conf".into(),
+            read_only: true,
+        },
+        BindMount {
+            host_path: layout.pg_hba.clone(),
+            container_path: "/etc/postgresql/pg_hba.conf".into(),
+            read_only: true,
+        },
+        BindMount {
+            host_path: layout.pgbackrest_conf.clone(),
+            container_path: "/etc/pgbackrest/pgbackrest.conf".into(),
+            read_only: true,
+        },
+    ];
+    let volumes = vec![NamedVolume {
+        volume_name: format!("pgforge_data_{}", args.name),
+        container_path: "/var/lib/postgresql/data".into(),
+    }];
+
+    let spec = CreateContainerSpec {
+        container_name: format!("pgforge_{}", args.name),
+        image: format!("pgforge/postgres:{}", args.pg_version),
+        env,
+        binds,
+        volumes,
+        host_port,
+        container_port: 5432,
+        memory_mb: tuning.ram_mb,
+        network: "pgforge_net".into(),
+        shm_size_mb: 256,
+    };
+    let id = docker.create_container(&spec).await?;
+
+    // 6. Start it.
+    docker.start_container(&id).await?;
+
+    // 7. Persist state.
+    let state = InstanceState {
+        instance: Instance {
+            name: args.name.clone(),
+            db_name: args.name.clone(),
+            app_user: args.app_user,
+            app_password: args.app_password,
+            pgbackrest_password: args.pgbackrest_password,
+            preset: args.preset,
+            pg_version: args.pg_version,
+            host_port,
+        },
+        created_at: now_rfc3339(),
+    };
+    state.save_under(&state_root)?;
+
+    Ok(state)
+}
+
+fn now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Cheap ISO-8601 stamp without pulling chrono. Resolution: seconds, UTC.
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hh = rem / 3600;
+    let mm = (rem % 3600) / 60;
+    let ss = rem % 60;
+    let (y, m, d) = days_to_ymd(days as i64);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+fn days_to_ymd(days_from_epoch: i64) -> (i64, u32, u32) {
+    // Civil-from-days algorithm by Howard Hinnant (public domain).
+    let z = days_from_epoch + 719468;
+    let era = if z >= 0 { z / 146097 } else { (z - 146096) / 146097 };
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn config_layout_is_per_instance() {
+        let layout = ConfigLayout::for_instance(Path::new("/state"), "billing");
+        assert_eq!(
+            layout.postgresql_conf,
+            PathBuf::from("/state/instances/billing/conf/postgresql.conf"),
+        );
+        assert_eq!(
+            layout.pg_hba,
+            PathBuf::from("/state/instances/billing/conf/pg_hba.conf"),
+        );
+        assert_eq!(
+            layout.pgbackrest_conf,
+            PathBuf::from("/state/instances/billing/conf/pgbackrest.conf"),
+        );
+    }
+
+    #[test]
+    fn now_rfc3339_starts_with_2_and_ends_with_z() {
+        let s = now_rfc3339();
+        assert!(s.starts_with('2'));
+        assert!(s.ends_with('Z'));
+        assert_eq!(s.len(), 20);
+    }
+}
