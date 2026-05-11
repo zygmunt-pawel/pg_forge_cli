@@ -239,6 +239,26 @@ async fn post_create_steps<E: DockerEngine>(
     // pg_basebackup of a small DB takes seconds; larger ones minutes. Allow 10 min.
     wait_for_pg_ready(docker, id, 600).await?;
 
+    // Create the pgbackrest stanza on the clone's OWN repo path so archive_command
+    // can begin pushing WAL. The cloned cluster has a new system identifier vs.
+    // source, so a fresh stanza on `/pgforge/<as_name>/` is what we want — never
+    // reuse the source's stanza, that would mix WAL from two diverged timelines.
+    let stanza = docker
+        .exec(
+            id,
+            &[
+                "su", "-", "postgres", "-c",
+                "pgbackrest --stanza=main stanza-create",
+            ],
+        )
+        .await?;
+    if stanza.exit_code != 0 {
+        return Err(PgForgeError::Docker(format!(
+            "pgbackrest stanza-create failed on clone (exit {}): stdout={:?} stderr={:?}",
+            stanza.exit_code, stanza.stdout, stanza.stderr
+        )));
+    }
+
     let state = InstanceState {
         instance: Instance {
             name: args.as_name.clone(),
