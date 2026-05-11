@@ -3,4 +3,5 @@
 pub mod domain;
 pub mod error;
 pub mod pgbackrest;
+pub mod ports;
 pub mod postgres;
