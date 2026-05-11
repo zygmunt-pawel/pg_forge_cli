@@ -180,21 +180,42 @@ pub async fn run_with_engine<E: DockerEngine>(
         shm_size_mb: 256,
         command_override: None,
     };
+    let container_name = spec.container_name.clone();
+    let volume_name = spec.volumes[0].volume_name.clone();
     let id = docker.create_container(&spec).await?;
 
+    // From here on, any failure should clean up the half-created container + volume.
+    match post_create_steps(docker, &id, &args, host_port, &state_root).await {
+        Ok(state) => Ok(state),
+        Err(e) => {
+            crate::docker::cleanup::cleanup_partial(docker, &container_name, &volume_name).await;
+            Err(e)
+        }
+    }
+}
+
+/// Runs all steps after `create_container`: start, wait, stanza-create, persist state.
+/// Extracted so the caller can run cleanup_partial on any failure.
+async fn post_create_steps<E: DockerEngine>(
+    docker: &E,
+    id: &str,
+    args: &CreateArgs,
+    host_port: u16,
+    state_root: &PathBuf,
+) -> Result<InstanceState> {
     // 6. Start it.
-    docker.start_container(&id).await?;
+    docker.start_container(id).await?;
 
     // Wait for the container to reach Running state in Docker's eyes, then for
     // Postgres inside it to accept local connections, then create the
     // pgbackrest stanza so archive_command can begin pushing WAL.
     docker
-        .wait_for_container_running(&id, std::time::Duration::from_secs(30))
+        .wait_for_container_running(id, std::time::Duration::from_secs(30))
         .await?;
-    crate::docker::wait::wait_for_pg_ready(docker, &id, 30).await?;
+    crate::docker::wait::wait_for_pg_ready(docker, id, 30).await?;
     let stanza = docker
         .exec(
-            &id,
+            id,
             &[
                 "su", "-", "postgres", "-c",
                 "pgbackrest --stanza=main stanza-create",
@@ -213,16 +234,16 @@ pub async fn run_with_engine<E: DockerEngine>(
         instance: Instance {
             name: args.name.clone(),
             db_name: args.name.clone(),
-            app_user: args.app_user,
-            app_password: args.app_password,
-            pgbackrest_password: args.pgbackrest_password,
+            app_user: args.app_user.clone(),
+            app_password: args.app_password.clone(),
+            pgbackrest_password: args.pgbackrest_password.clone(),
             preset: args.preset,
             pg_version: args.pg_version,
             host_port,
         },
         created_at: crate::time::now_iso(),
     };
-    state.save_under(&state_root)?;
+    state.save_under(state_root)?;
 
     Ok(state)
 }

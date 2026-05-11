@@ -207,12 +207,35 @@ pub async fn run_with_engine<E: DockerEngine>(
             "/usr/local/bin/pgforge-restore-entrypoint.sh".into(),
         ]),
     };
+    let container_name = spec.container_name.clone();
+    let volume_name = spec.volumes[0].volume_name.clone();
     let id = docker.create_container(&spec).await?;
-    docker.start_container(&id).await?;
+
+    // From here on, any failure should clean up the half-created container + volume.
+    match post_create_steps(docker, &id, &args, source, host_port, &state_root).await {
+        Ok(state) => Ok(state),
+        Err(e) => {
+            crate::docker::cleanup::cleanup_partial(docker, &container_name, &volume_name).await;
+            Err(e)
+        }
+    }
+}
+
+/// Runs all steps after `create_container`: start, wait, persist state.
+/// Extracted so the caller can run cleanup_partial on any failure.
+async fn post_create_steps<E: DockerEngine>(
+    docker: &E,
+    id: &str,
+    args: &RestoreArgs,
+    source: InstanceState,
+    host_port: u16,
+    state_root: &PathBuf,
+) -> Result<InstanceState> {
+    docker.start_container(id).await?;
     docker
-        .wait_for_container_running(&id, std::time::Duration::from_secs(30))
+        .wait_for_container_running(id, std::time::Duration::from_secs(30))
         .await?;
-    crate::docker::wait::wait_for_pg_ready(docker, &id, 600).await?;
+    crate::docker::wait::wait_for_pg_ready(docker, id, 600).await?;
 
     // 5. Persist state for the new instance.
     let state = InstanceState {
@@ -228,6 +251,6 @@ pub async fn run_with_engine<E: DockerEngine>(
         },
         created_at: crate::time::now_iso(),
     };
-    state.save_under(&state_root)?;
+    state.save_under(state_root)?;
     Ok(state)
 }
