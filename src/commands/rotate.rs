@@ -62,7 +62,9 @@ pub async fn run_with_engine<E: DockerEngine>(
     let tuning = instance.preset.tuning();
 
     let container_name = format!("pgforge_{}", instance.name);
-    let volume_name = format!("pgforge_data_{}", instance.name);
+    // Honor a post-upgrade volume_name_override so rotate re-attaches the
+    // upgraded volume (not a fresh-and-empty one named by convention).
+    let volume_name = instance.volume_name();
 
     // 1. Stop + remove container (volume stays).
     if docker.container_running(&container_name).await? {

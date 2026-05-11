@@ -82,6 +82,14 @@ pub trait DockerEngine: Send + Sync {
         timeout: std::time::Duration,
     ) -> Result<()>;
 
+    /// Block until a one-shot container exits, returning its exit code.
+    /// Used by `pgforge upgrade` to drive pg_upgrade synchronously.
+    async fn wait_for_container_exit(
+        &self,
+        id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<i64>;
+
     /// Remove a container (force=true → kill if running). Used for rollback.
     async fn remove_container(&self, id: &str, force: bool) -> Result<()>;
 

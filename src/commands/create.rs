@@ -314,6 +314,7 @@ async fn bootstrap_create<E: DockerEngine>(
             pg_version: args.pg_version,
             host_port,
             backup_enabled: !args.no_backup,
+            volume_name_override: None,
         },
         created_at: crate::time::now_iso(),
     })
@@ -379,6 +380,14 @@ mod tests {
         ) -> crate::error::Result<()> {
             self.calls.lock().unwrap().push("wait_for_container_running");
             Ok(())
+        }
+        async fn wait_for_container_exit(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+        ) -> crate::error::Result<i64> {
+            self.calls.lock().unwrap().push("wait_for_container_exit");
+            Ok(0)
         }
         async fn remove_container(&self, _: &str, _: bool) -> crate::error::Result<()> {
             self.calls.lock().unwrap().push("remove_container");

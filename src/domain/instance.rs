@@ -25,6 +25,11 @@ pub struct Instance {
     /// is what every pre-Plan-4 instance had).
     #[serde(default = "backup_enabled_default")]
     pub backup_enabled: bool,
+    /// After `pgforge upgrade`, the data lives in a new docker volume whose
+    /// name encodes the post-upgrade version. None = use the convention
+    /// `pgforge_data_<name>` (every instance before its first upgrade).
+    #[serde(default)]
+    pub volume_name_override: Option<String>,
 }
 
 fn backup_enabled_default() -> bool {
@@ -32,6 +37,14 @@ fn backup_enabled_default() -> bool {
 }
 
 impl Instance {
+    /// Effective docker volume name. Honors a post-upgrade override; falls
+    /// back to the original `pgforge_data_<name>` convention.
+    pub fn volume_name(&self) -> String {
+        self.volume_name_override
+            .clone()
+            .unwrap_or_else(|| format!("pgforge_data_{}", self.name))
+    }
+
     /// Names must be filesystem-safe, DNS-safe, and short enough to fit a
     /// container name. Conservative regex: lowercase start, then
     /// alphanumeric / `_` / `-`, total length 1..=63.

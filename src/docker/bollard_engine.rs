@@ -344,6 +344,33 @@ impl DockerEngine for BollardEngine {
         }
     }
 
+    async fn wait_for_container_exit(
+        &self,
+        id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<i64> {
+        let start = std::time::Instant::now();
+        loop {
+            let inspect = self
+                .docker
+                .inspect_container(id, None)
+                .await
+                .map_err(|e| PgForgeError::Docker(format!("inspect_container: {e}")))?;
+            let state = inspect.state.as_ref();
+            let running = state.and_then(|s| s.running).unwrap_or(false);
+            if !running {
+                let exit_code = state.and_then(|s| s.exit_code).unwrap_or(-1);
+                return Ok(exit_code);
+            }
+            if start.elapsed() >= timeout {
+                return Err(PgForgeError::Docker(format!(
+                    "container {id} did not exit within {timeout:?}"
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+
     async fn remove_container(&self, id: &str, force: bool) -> Result<()> {
         use bollard::query_parameters::RemoveContainerOptionsBuilder;
         let opts = RemoveContainerOptionsBuilder::default()

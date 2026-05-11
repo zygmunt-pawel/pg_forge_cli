@@ -277,6 +277,7 @@ async fn bootstrap_restore<E: DockerEngine>(
             // README caveat — its archive-push to source's stanza will be
             // rejected post-promote, that's a Plan 4 known limitation).
             backup_enabled: source.instance.backup_enabled,
+            volume_name_override: None,
         },
         created_at: crate::time::now_iso(),
     })

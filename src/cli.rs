@@ -64,6 +64,15 @@ pub enum Command {
         #[arg(long)]
         name: String,
     },
+    /// In-place major-version upgrade via pg_upgrade. Takes a pre-upgrade
+    /// snapshot automatically (for backup-enabled instances) so the user
+    /// can roll back via `pgforge restore`.
+    Upgrade {
+        #[arg(long)]
+        name: String,
+        #[arg(long = "to")]
+        to_version: u8,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -221,6 +230,16 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("Rotated {name}. Container recreated with current configs; volume retained.");
+            Ok(())
+        }
+        Some(Command::Upgrade { name, to_version }) => {
+            crate::commands::upgrade::run(crate::commands::upgrade::UpgradeArgs {
+                name: name.clone(),
+                to_version,
+                override_state_root: None,
+            })
+            .await?;
+            println!("Upgraded {name} to PostgreSQL {to_version}.");
             Ok(())
         }
         Some(Command::Create {

@@ -308,6 +308,7 @@ async fn bootstrap_clone<E: DockerEngine>(
             // bootstrap_clone). Source must be backup-enabled to clone at
             // all — guarded earlier in run_with_engine.
             backup_enabled: true,
+            volume_name_override: None,
         },
         created_at: crate::time::now_iso(),
     })

@@ -15,6 +15,7 @@ fn fixture(name: &str) -> InstanceState {
             pg_version: 18,
             host_port: 5433,
             backup_enabled: true,
+            volume_name_override: None,
         },
         created_at: "2026-05-11T08:00:00Z".into(),
     }

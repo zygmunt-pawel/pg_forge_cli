@@ -7,3 +7,4 @@ pub mod rotate;
 pub mod snapshot;
 pub mod snapshots;
 pub mod status;
+pub mod upgrade;
