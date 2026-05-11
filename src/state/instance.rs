@@ -1,0 +1,88 @@
+use crate::domain::instance::Instance;
+use crate::error::{PgForgeError, Result};
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceState {
+    pub instance: Instance,
+    pub created_at: String, // ISO-8601, kept as String to avoid pulling chrono yet
+}
+
+impl InstanceState {
+    pub fn default_state_root() -> PathBuf {
+        ProjectDirs::from("dev", "pgforge", "pgforge")
+            .map(|p| p.data_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn dir_under(state_root: &Path, name: &str) -> PathBuf {
+        state_root.join("instances").join(name)
+    }
+
+    fn file_under(state_root: &Path, name: &str) -> PathBuf {
+        Self::dir_under(state_root, name).join("state.toml")
+    }
+
+    pub fn save_under(&self, state_root: &Path) -> Result<()> {
+        Instance::validate_name(&self.instance.name)?;
+        let dir = Self::dir_under(state_root, &self.instance.name);
+        std::fs::create_dir_all(&dir).map_err(|e| PgForgeError::Io {
+            path: dir.clone(),
+            source: e,
+        })?;
+        let file = Self::file_under(state_root, &self.instance.name);
+        let raw = toml::to_string_pretty(self).map_err(|e| {
+            PgForgeError::Anyhow(anyhow::anyhow!("serialize instance state: {e}"))
+        })?;
+        std::fs::write(&file, raw).map_err(|e| PgForgeError::Io {
+            path: file,
+            source: e,
+        })
+    }
+
+    pub fn load_under(state_root: &Path, name: &str) -> Result<Self> {
+        Instance::validate_name(name)?;
+        let file = Self::file_under(state_root, name);
+        if !file.exists() {
+            return Err(PgForgeError::InstanceNotFound(name.to_string()));
+        }
+        let raw = std::fs::read_to_string(&file).map_err(|e| PgForgeError::Io {
+            path: file.clone(),
+            source: e,
+        })?;
+        toml::from_str(&raw).map_err(|source| PgForgeError::ConfigMalformed {
+            path: file,
+            source,
+        })
+    }
+
+    pub fn list_under(state_root: &Path) -> Result<Vec<String>> {
+        let dir = state_root.join("instances");
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let entries = std::fs::read_dir(&dir).map_err(|e| PgForgeError::Io {
+            path: dir.clone(),
+            source: e,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| PgForgeError::Io {
+                path: dir.clone(),
+                source: e,
+            })?;
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if let Some(name) = entry.file_name().to_str() {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn exists_under(state_root: &Path, name: &str) -> bool {
+        Self::file_under(state_root, name).exists()
+    }
+}
