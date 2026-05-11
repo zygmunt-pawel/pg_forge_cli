@@ -16,6 +16,9 @@ fn entrypoint_restores_latest_when_no_target_time() {
     assert!(script.contains("pgbackrest --stanza=main"));
     assert!(script.contains("restore"));
     assert!(!script.contains("--target="));
+    // Critical: must auto-promote, otherwise PG sits in paused recovery.
+    assert!(script.contains("--target-action=promote"),
+            "default restore must include --target-action=promote, got:\n{script}");
 }
 
 #[test]

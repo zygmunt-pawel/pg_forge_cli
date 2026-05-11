@@ -8,7 +8,7 @@ pub fn generate_restore_entrypoint(target_time: Option<&str>) -> String {
         Some(t) => format!(
             r#" --type=time --target="{t}" --target-action=promote"#
         ),
-        None => String::new(),
+        None => " --target-action=promote".to_string(),
     };
     format!(
         r#"#!/bin/sh

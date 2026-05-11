@@ -102,7 +102,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     })?;
     std::fs::write(
         &pg_hba,
-        generate_pg_hba(&args.as_name, &source.instance.app_user),
+        generate_pg_hba(&source.instance.db_name, &source.instance.app_user),
     )
     .map_err(|e| PgForgeError::Io {
         path: pg_hba.clone(),
@@ -218,7 +218,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let state = InstanceState {
         instance: Instance {
             name: args.as_name.clone(),
-            db_name: args.as_name.clone(),
+            db_name: source.instance.db_name.clone(),
             app_user: source.instance.app_user,
             app_password: source.instance.app_password,
             pgbackrest_password: source.instance.pgbackrest_password,
