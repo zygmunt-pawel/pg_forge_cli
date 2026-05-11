@@ -12,6 +12,15 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Take a full backup of a running instance.
+    Snapshot {
+        /// Instance name.
+        #[arg(long)]
+        name: String,
+        /// Optional user-friendly label (stored alongside pgbackrest's label).
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -45,6 +54,19 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         None => {
             // TUI is added in Plan 5. Until then: print help.
             println!("pgforge: TUI not yet implemented (Plan 5). Run `pgforge --help`.");
+            Ok(())
+        }
+        Some(Command::Snapshot { name, label }) => {
+            let rec = crate::commands::snapshot::run(crate::commands::snapshot::SnapshotArgs {
+                instance: name,
+                user_label: label,
+                override_state_root: None,
+            })
+            .await?;
+            println!(
+                "Snapshot taken: {} (label={:?}, taken_at={})",
+                rec.label, rec.user_label, rec.taken_at
+            );
             Ok(())
         }
         Some(Command::Create {
