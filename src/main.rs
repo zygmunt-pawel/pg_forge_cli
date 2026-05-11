@@ -1,3 +1,5 @@
+use clap::Parser;
+use pgforge::cli::{Cli, dispatch};
 use pgforge::error::Result;
 use tracing_subscriber::EnvFilter;
 
@@ -8,6 +10,6 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    tracing::info!("pgforge starting");
-    Ok(())
+    let cli = Cli::parse();
+    dispatch(cli).await
 }
