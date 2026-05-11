@@ -220,4 +220,20 @@ impl DockerEngine for BollardEngine {
 
         Ok(!list.is_empty())
     }
+
+    async fn exec(&self, _id: &str, _cmd: &[&str]) -> Result<crate::docker::engine::ExecOutput> {
+        unimplemented!("filled in Plan 2 Task 3")
+    }
+
+    async fn stop_container(&self, _id: &str) -> Result<()> {
+        unimplemented!("filled in Plan 2 Task 3")
+    }
+
+    async fn wait_for_container_running(
+        &self,
+        _id: &str,
+        _timeout: std::time::Duration,
+    ) -> Result<()> {
+        unimplemented!("filled in Plan 2 Task 3")
+    }
 }

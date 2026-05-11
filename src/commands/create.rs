@@ -178,6 +178,7 @@ pub async fn run_with_engine<E: DockerEngine>(
         memory_mb: tuning.ram_mb,
         network: "pgforge_net".into(),
         shm_size_mb: 256,
+        command_override: None,
     };
     let id = docker.create_container(&spec).await?;
 
@@ -239,6 +240,26 @@ mod tests {
         async fn container_exists(&self, _: &str) -> crate::error::Result<bool> {
             self.calls.lock().unwrap().push("container_exists");
             Ok(false)
+        }
+        async fn exec(&self, _: &str, _: &[&str]) -> crate::error::Result<crate::docker::engine::ExecOutput> {
+            self.calls.lock().unwrap().push("exec");
+            Ok(crate::docker::engine::ExecOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+        async fn stop_container(&self, _: &str) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("stop_container");
+            Ok(())
+        }
+        async fn wait_for_container_running(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+        ) -> crate::error::Result<()> {
+            self.calls.lock().unwrap().push("wait_for_container_running");
+            Ok(())
         }
     }
 

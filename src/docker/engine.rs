@@ -22,12 +22,21 @@ pub struct CreateContainerSpec {
     pub memory_mb: u32,
     pub network: String,
     pub shm_size_mb: u32,
+    /// Override the container's default entrypoint/command. None = use image default.
+    pub command_override: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NamedVolume {
     pub volume_name: String,
     pub container_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -45,4 +54,17 @@ pub trait DockerEngine: Send + Sync {
     async fn create_container(&self, spec: &CreateContainerSpec) -> Result<String>;
     async fn start_container(&self, id: &str) -> Result<()>;
     async fn container_exists(&self, name: &str) -> Result<bool>;
+
+    /// Run a command inside a running container. Returns combined output.
+    async fn exec(&self, id: &str, cmd: &[&str]) -> Result<ExecOutput>;
+
+    /// Stop a running container (SIGTERM, grace period 10s, then SIGKILL).
+    async fn stop_container(&self, id: &str) -> Result<()>;
+
+    /// Block until inspect reports State.Running == true, or `timeout` elapses.
+    async fn wait_for_container_running(
+        &self,
+        id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<()>;
 }
