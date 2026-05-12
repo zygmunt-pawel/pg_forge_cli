@@ -166,6 +166,10 @@ mod tests {
             self.ops.lock().unwrap().push(format!("exec({name}, {})", cmd.join(" ")));
             Ok(ExecOutput { stdout: String::new(), stderr: String::new(), exit_code: self.exec_exit })
         }
+        async fn exec_as(&self, container: &str, _user: &str, cmd: &[&str]) -> Result<ExecOutput> {
+            // Mock: delegate to exec, ignoring the user argument.
+            self.exec(container, cmd).await
+        }
         async fn stop_container(&self, name: &str) -> Result<()> {
             self.ops.lock().unwrap().push(format!("stop({name})"));
             Ok(())

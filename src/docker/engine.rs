@@ -89,6 +89,12 @@ pub trait DockerEngine: Send + Sync {
     /// Run a command inside a running container. Returns combined output.
     async fn exec(&self, id: &str, cmd: &[&str]) -> Result<ExecOutput>;
 
+    /// Execute `cmd` inside `container` running as the given OS user (uid or
+    /// name). Use when the command must drop privileges from root — replaces
+    /// the `su -` shell trick which silently swallows the child exit code on
+    /// some PAM stacks.
+    async fn exec_as(&self, container: &str, user: &str, cmd: &[&str]) -> Result<ExecOutput>;
+
     /// Stop a running container (SIGTERM, grace period 10s, then SIGKILL).
     async fn stop_container(&self, id: &str) -> Result<()>;
 

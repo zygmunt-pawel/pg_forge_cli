@@ -110,12 +110,10 @@ pub async fn run_with_engine<E: DockerEngine>(
     }
 
     let out = docker
-        .exec(
+        .exec_as(
             &container,
-            &[
-                "su", "-", "postgres", "-c",
-                "pgbackrest --stanza=main --type=full backup",
-            ],
+            "postgres",
+            &["pgbackrest", "--stanza=main", "--type=full", "backup"],
         )
         .await?;
     if out.exit_code != 0 {

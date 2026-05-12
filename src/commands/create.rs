@@ -414,6 +414,10 @@ mod tests {
                 exit_code: 0,
             })
         }
+        async fn exec_as(&self, container: &str, _user: &str, cmd: &[&str]) -> crate::error::Result<crate::docker::engine::ExecOutput> {
+            // Mock: delegate to exec, ignoring the user argument.
+            self.exec(container, cmd).await
+        }
         async fn stop_container(&self, _: &str) -> crate::error::Result<()> {
             self.calls.lock().unwrap().push("stop_container");
             Ok(())
