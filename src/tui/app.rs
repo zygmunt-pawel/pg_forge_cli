@@ -280,16 +280,24 @@ impl AppState {
                         .snapshots
                         .get(&n)
                         .and_then(|v| v.pitr.earliest.clone());
+                    // Also capture container uptime — fresh instances
+                    // without any full backup have no PITR window yet,
+                    // but they STILL have an absolute upper bound on
+                    // "how far back can you restore": the container
+                    // birth. submit_modal will use whichever cap is
+                    // tighter.
+                    let uptime_min = self
+                        .statuses
+                        .get(&n)
+                        .and_then(|s| s.uptime_seconds)
+                        .map(|s| (s / 60) as u32);
                     self.modal = Some(Modal::RestoreAs {
                         source: n,
                         as_input: TextField::default(),
-                        // 0 = "latest archived WAL" (no --target-time at all).
-                        // Arrow keys bump this in 1-minute steps; capped at
-                        // (now - pitr_earliest) so the user can't pick a
-                        // time before the earliest available backup.
                         minutes_ago: 0,
                         focus: 0,
                         pitr_earliest,
+                        uptime_cap_min: uptime_min,
                     });
                 }
             }
@@ -385,9 +393,9 @@ impl AppState {
                 KeyCode::Enter => Action::Submit,
                 _ => Action::Nothing,
             },
-            Some(Modal::RestoreAs { as_input, minutes_ago, focus, pitr_earliest, .. }) => {
-                let cap = pitr_max_minutes_ago(pitr_earliest.as_deref());
-                let clamp = |m: u32| -> u32 { if let Some(c) = cap { m.min(c) } else { m } };
+            Some(Modal::RestoreAs { as_input, minutes_ago, focus, pitr_earliest, uptime_cap_min, .. }) => {
+                let cap = effective_restore_cap(pitr_earliest.as_deref(), *uptime_cap_min);
+                let clamp = |m: u32| -> u32 { m.min(cap) };
                 match k.code {
                     KeyCode::Tab => { *focus = (*focus + 1) % 2; Action::Nothing }
                     KeyCode::Enter => Action::Submit,
@@ -610,13 +618,13 @@ impl AppState {
                     }
                 }
             }
-            Some(Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest }) => {
+            Some(Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest, uptime_cap_min }) => {
                 let as_ = as_input.buf.clone();
                 if let Err(msg) = validate_instance_name(&as_) {
                     self.last_op_error = Some(OpError {
                         instance: source.clone(), kind: OpKind::Restore, msg, at: Instant::now(),
                     });
-                    self.modal = Some(Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest });
+                    self.modal = Some(Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest, uptime_cap_min });
                     return;
                 }
                 // 0 = "latest archived WAL" — no --target-time. Else compute
@@ -812,6 +820,26 @@ impl AppState {
 /// yet — in that case we don't cap (defensive; submit_modal would just
 /// pass the raw timestamp through to pgbackrest which would error out
 /// loudly).
+/// Resolve the maximum sensible "minutes ago" the Restore picker
+/// should allow. Combines two upper bounds, picking the tighter one:
+///
+///   - PITR earliest (if pgbackrest has a full backup yet): you can't
+///     restore to a time before the oldest full.
+///   - Container uptime (always): you can't restore to a time before
+///     the container itself existed — there's literally no data.
+///
+/// Returns 0 when neither bound is known AND nothing is finite yet —
+/// the only safe value being "latest archived WAL".
+pub(crate) fn effective_restore_cap(earliest: Option<&str>, uptime_min: Option<u32>) -> u32 {
+    let from_pitr = pitr_max_minutes_ago(earliest);
+    match (from_pitr, uptime_min) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None)    => a,
+        (None, Some(b))    => b,
+        (None, None)       => 0,
+    }
+}
+
 pub(crate) fn pitr_max_minutes_ago(earliest: Option<&str>) -> Option<u32> {
     use std::str::FromStr;
     let e = earliest?;
@@ -1324,6 +1352,7 @@ mod tests {
             minutes_ago: 0,
             focus: 0,
             pitr_earliest: None,
+            uptime_cap_min: None,
         });
         s.apply_event(key(KeyCode::Enter));
         assert!(matches!(s.modal, Some(Modal::Confirm {
@@ -1344,6 +1373,7 @@ mod tests {
             minutes_ago: 9,
             focus: 1,
             pitr_earliest: Some(earliest_10m_ago),
+            uptime_cap_min: None,
         });
         // Pressing → bumps to 10 (cap).
         s.apply_event(key(KeyCode::Right));
@@ -1375,6 +1405,7 @@ mod tests {
             minutes_ago: 5,
             focus: 0,
             pitr_earliest: None,
+            uptime_cap_min: None,
         });
         s.apply_event(key(KeyCode::Enter));
         let Some(Modal::Confirm { kind: PendingDestructiveOp::Restore { target_time, .. }, .. }) = &s.modal

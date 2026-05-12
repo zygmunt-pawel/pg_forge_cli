@@ -25,7 +25,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     match modal {
         Modal::CloneAs { source, input } => single_input(f, area, &format!("Clone {source} as"), &input.buf, input.cursor),
         Modal::UpgradeTo { source, input } => single_input(f, area, &format!("Upgrade {source} — target version"), &input.buf, input.cursor),
-        Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest } => {
+        Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest, uptime_cap_min } => {
             let block = Block::default().title(format!(" Restore {source} ")).borders(Borders::ALL);
             f.render_widget(block, area);
             let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
@@ -49,12 +49,17 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 ),
                 chunks[1],
             );
-            // PITR window info — capped value is in handle_modal_key, so
-            // the picker stops at this earliest; we just show it so the
-            // user knows why the value won't go higher.
-            let pitr_line = match pitr_earliest.as_ref() {
-                Some(e) => format!("PITR earliest: {e}  (picker capped here)"),
-                None    => "PITR earliest: (no full backup yet — `pgforge snapshot` first)".to_string(),
+            // Cap info — show whichever bound is tighter (PITR or
+            // container uptime). For freshly-created instances PITR is
+            // None and uptime is the only thing stopping the user
+            // picking 500 min ago.
+            let pitr_line = match (pitr_earliest.as_ref(), uptime_cap_min) {
+                (Some(e), _) => format!("PITR earliest: {e}  (picker capped here)"),
+                (None, Some(u)) => format!(
+                    "no full backup yet — picker capped at container uptime ({u} min). \
+                     Run snapshot first to extend back."
+                ),
+                (None, None) => "no PITR data, no uptime — picker locked at \"latest\" only".to_string(),
             };
             f.render_widget(
                 Paragraph::new(Line::styled(pitr_line, Style::default().fg(Color::DarkGray))),

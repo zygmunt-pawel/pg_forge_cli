@@ -148,11 +148,16 @@ pub enum Modal {
         focus: u8,
         /// Captured at modal-open from snapshots[source].pitr.earliest.
         /// Used to cap minutes_ago so the user can't pick a target_time
-        /// before the earliest full backup (pgbackrest would either
-        /// fall back to the earliest full silently, or fail outright —
-        /// neither is what the user expected). None when the instance
-        /// has no full backups yet, in which case we don't cap.
+        /// before the earliest full backup. None when the instance
+        /// has no full backups yet.
         pitr_earliest: Option<String>,
+        /// Container uptime in minutes at modal-open. Acts as the
+        /// absolute upper bound when there's no PITR window yet
+        /// (freshly-created instance) — you can't restore to a point
+        /// before the container was even born. None means uptime
+        /// wasn't available; in that case the picker falls back to
+        /// 0 (latest only) when pitr_earliest is also None.
+        uptime_cap_min: Option<u32>,
     },
     Confirm { kind: PendingDestructiveOp, prompt: String },
     Snapshots { name: String, view: SnapshotsView },
