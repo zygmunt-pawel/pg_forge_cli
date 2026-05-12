@@ -1,4 +1,4 @@
-use pgforge::commands::snapshot::{redact_pgbackrest_output, pgbackrest_indicates_failure};
+use pgforge::commands::snapshot::{is_snapshot_due, redact_pgbackrest_output, pgbackrest_indicates_failure};
 
 #[test]
 fn detects_error_marker_in_stderr() {
@@ -18,4 +18,18 @@ fn redact_strips_repo1_s3_key_lines() {
     assert!(!r.contains("AKIAEXAMPLE"));
     assert!(!r.contains("verysecret"));
     assert!(r.contains("INFO: ok"));
+}
+
+#[test]
+fn never_snapshotted_with_zero_hour_does_not_panic() {
+    let _ = is_snapshot_due(0, None);
+}
+
+#[test]
+fn unparseable_last_is_not_due() {
+    // The previous behavior returned true on parse failure → storm.
+    // We now treat unparseable as "skip this tick" so the scheduler
+    // doesn't loop on a corrupt state.toml.
+    assert!(!is_snapshot_due(0, Some("garbage")),
+        "garbage timestamp must NOT trigger a re-snapshot");
 }

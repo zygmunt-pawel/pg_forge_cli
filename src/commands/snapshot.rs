@@ -57,7 +57,7 @@ pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
 /// True iff:
 ///   1. the hour has already passed today in local time, AND
 ///   2. last_snapshot_at is None OR it's older than today's window-open time.
-fn is_snapshot_due(hour: u8, last_snapshot_at: Option<&str>) -> bool {
+pub fn is_snapshot_due(hour: u8, last_snapshot_at: Option<&str>) -> bool {
     use std::str::FromStr;
     let zoned_now = jiff::Zoned::now();
     let today = zoned_now.date();
@@ -72,7 +72,9 @@ fn is_snapshot_due(hour: u8, last_snapshot_at: Option<&str>) -> bool {
         return true; // never snapshotted
     };
     let Ok(last_ts) = jiff::Timestamp::from_str(last) else {
-        return true; // unparseable → treat as never (best-effort safety)
+        tracing::warn!(target: "pgforge::snapshot::due",
+            "unparseable last_snapshot_at {last:?}; skipping this tick (clear with `pgforge snapshot --reset` if intentional)");
+        return false;
     };
     // Convert last snapshot to the local zone so "today" comparison
     // matches the user's expectation.
