@@ -43,6 +43,7 @@ async fn upgrade_17_to_18_preserves_data() {
             pgbackrest_password: String::new(),
             override_state_root: Some(state_root.clone()),
             no_backup: true,
+        retain_days: 30,
         },
         &docker,
         state_root.clone(),

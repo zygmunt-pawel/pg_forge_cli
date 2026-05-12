@@ -30,10 +30,21 @@ pub struct Instance {
     /// `pgforge_data_<name>` (every instance before its first upgrade).
     #[serde(default)]
     pub volume_name_override: Option<String>,
+    /// pgbackrest retention window in days. After each new full backup,
+    /// pgbackrest deletes any full older than `retain_days` along with
+    /// the WAL needed to recover from them — so R2 storage stays bounded
+    /// and PITR window slides forward. 0 = keep everything (no expiry).
+    /// Default 30 days = roughly RDS Standard retention.
+    #[serde(default = "retain_days_default")]
+    pub retain_days: u32,
 }
 
 fn backup_enabled_default() -> bool {
     true
+}
+
+fn retain_days_default() -> u32 {
+    30
 }
 
 impl Instance {

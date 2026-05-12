@@ -343,6 +343,7 @@ impl AppState {
                     pg_version: pg_field,
                     preset: crate::domain::preset::Preset::Small,
                     no_backup: true, // safer default — S3 isn't configured on most fresh setups
+                    retain_days: 30,
                     focus: 0,
                     generated_password: random::password(24),
                     generated_pgbackrest_password: random::password(24),
@@ -418,16 +419,18 @@ impl AppState {
                 }
                 _ => Action::Nothing,
             },
-            Some(Modal::Create { name, app_user, pg_version, preset, no_backup, focus, .. }) => {
-                // 5 fields, cycle with Tab. Space cycles preset / toggles backup.
+            Some(Modal::Create { name, app_user, pg_version, preset, no_backup, retain_days, focus, .. }) => {
+                // 6 fields, cycle with Tab. Space cycles preset / toggles
+                // backup / bumps retain_days. ← → on focus==5 ±1 day.
                 match k.code {
-                    KeyCode::Tab       => { *focus = (*focus + 1) % 5; Action::Nothing }
-                    KeyCode::BackTab   => { *focus = (*focus + 4) % 5; Action::Nothing }
+                    KeyCode::Tab       => { *focus = (*focus + 1) % 6; Action::Nothing }
+                    KeyCode::BackTab   => { *focus = (*focus + 5) % 6; Action::Nothing }
                     KeyCode::Enter     => Action::Submit,
                     KeyCode::Char(' ') => {
                         match *focus {
                             3 => { *preset = next_preset(*preset); Action::Nothing }
                             4 => { *no_backup = !*no_backup; Action::Nothing }
+                            5 => { *retain_days = retain_days.saturating_add(1); Action::Nothing }
                             // For text fields, space inserts a space character.
                             0 => { name.insert_char(' '); Action::Nothing }
                             1 => { app_user.insert_char(' '); Action::Nothing }
@@ -440,6 +443,23 @@ impl AppState {
                             KeyCode::Right => next_preset(*preset),
                             _              => prev_preset(*preset),
                         };
+                        Action::Nothing
+                    }
+                    KeyCode::Left | KeyCode::Right if *focus == 5 => {
+                        if k.code == KeyCode::Right {
+                            *retain_days = retain_days.saturating_add(1);
+                        } else {
+                            *retain_days = retain_days.saturating_sub(1);
+                        }
+                        Action::Nothing
+                    }
+                    KeyCode::Char(d) if *focus == 5 && d.is_ascii_digit() => {
+                        let v = d.to_digit(10).unwrap();
+                        *retain_days = retain_days.saturating_mul(10).saturating_add(v);
+                        Action::Nothing
+                    }
+                    KeyCode::Backspace if *focus == 5 => {
+                        *retain_days /= 10;
                         Action::Nothing
                     }
                     KeyCode::Char(c) if !c.is_control() => {
@@ -576,12 +596,12 @@ impl AppState {
                 });
             }
             Some(Modal::Create {
-                name, app_user, pg_version, preset, no_backup, focus,
+                name, app_user, pg_version, preset, no_backup, retain_days, focus,
                 generated_password, generated_pgbackrest_password,
             }) => {
                 // Helper to set the error + put the modal back unchanged.
                 let fail = |state: &mut AppState, msg: String,
-                            name, app_user, pg_version, preset, no_backup, focus,
+                            name, app_user, pg_version, preset, no_backup, retain_days, focus,
                             generated_password, generated_pgbackrest_password| {
                     state.last_op_error = Some(OpError {
                         instance: "create wizard".into(),
@@ -590,7 +610,7 @@ impl AppState {
                         at: Instant::now(),
                     });
                     state.modal = Some(Modal::Create {
-                        name, app_user, pg_version, preset, no_backup, focus,
+                        name, app_user, pg_version, preset, no_backup, retain_days, focus,
                         generated_password, generated_pgbackrest_password,
                     });
                 };
@@ -598,7 +618,7 @@ impl AppState {
                 // Validate instance name
                 if let Err(msg) = validate_instance_name(&name.buf) {
                     fail(self, format!("instance name: {msg}"),
-                         name, app_user, pg_version, preset, no_backup, focus,
+                         name, app_user, pg_version, preset, no_backup, retain_days, focus,
                          generated_password, generated_pgbackrest_password);
                     return;
                 }
@@ -607,17 +627,14 @@ impl AppState {
                     Ok(v) if v > 0 => v,
                     _ => {
                         fail(self, format!("invalid pg version {:?} — expected 13..=18", pg_version.buf),
-                             name, app_user, pg_version, preset, no_backup, focus,
+                             name, app_user, pg_version, preset, no_backup, retain_days, focus,
                              generated_password, generated_pgbackrest_password);
                         return;
                     }
                 };
-                // Validate app_user — distinguish empty from bad-char, and quote
-                // the offending character so the user can find it (a trailing
-                // space or a "-" instead of "_" is the typical mistake).
                 if app_user.buf.is_empty() {
                     fail(self, "App user cannot be empty.".into(),
-                         name, app_user, pg_version, preset, no_backup, focus,
+                         name, app_user, pg_version, preset, no_backup, retain_days, focus,
                          generated_password, generated_pgbackrest_password);
                     return;
                 }
@@ -628,7 +645,7 @@ impl AppState {
                     fail(self, format!(
                         "App user {:?} has invalid char {} — only letters, digits and `_` are allowed (no `-`, no spaces).",
                         app_user.buf, printable,
-                    ), name, app_user, pg_version, preset, no_backup, focus,
+                    ), name, app_user, pg_version, preset, no_backup, retain_days, focus,
                        generated_password, generated_pgbackrest_password);
                     return;
                 }
@@ -640,6 +657,7 @@ impl AppState {
                     pg_version: ver,
                     preset,
                     no_backup,
+                    retain_days,
                 });
             }
             Some(Modal::ResizeTo { name, current, new }) => {

@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::Confirm { .. } => (60, 7),
         Modal::ErrorDetail { .. } => (80, 15),
         Modal::Snapshots { .. } => (80, 20),
-        Modal::Create { .. } => (72, 17),
+        Modal::Create { .. } => (72, 20),
         Modal::CreatedSuccess { .. } => (90, 11),
         Modal::ConnectionString { .. } => (90, 9),
         Modal::ResizeTo { .. } => (66, 11),
@@ -122,7 +122,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             }
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
         }
-        Modal::Create { name, app_user, pg_version, preset, no_backup, focus, .. } => {
+        Modal::Create { name, app_user, pg_version, preset, no_backup, retain_days, focus, .. } => {
             let block = Block::default().title(" Create new instance ").borders(Borders::ALL);
             f.render_widget(block, area);
             let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
@@ -133,6 +133,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                     Constraint::Length(2), // pg_version
                     Constraint::Length(2), // preset
                     Constraint::Length(2), // backup toggle
+                    Constraint::Length(2), // retain_days
                     Constraint::Min(1),    // footer
                 ])
                 .split(inner);
@@ -154,6 +155,22 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                     *focus == 4,
                 ),
                 chunks[4],
+            );
+            // Retention picker — disabled visually when backups are off.
+            let retention_value = if *no_backup {
+                "(disabled — backups off)".to_string()
+            } else if *retain_days == 0 {
+                "0 days — keep all full backups forever".to_string()
+            } else {
+                format!("{} days — older fulls auto-deleted from S3", retain_days)
+            };
+            f.render_widget(
+                cycle_para(
+                    "Retention (← →, digits):",
+                    &retention_value,
+                    *focus == 5,
+                ),
+                chunks[5],
             );
             // Help footer — styled spans so the keys stand out from the
             // surrounding prose. Three lines because [n]ew is the most
@@ -180,7 +197,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),
-                chunks[5],
+                chunks[6],
             );
             // Place the terminal's blinking caret at the active text
             // field. ratatui hides the cursor in the alternate screen

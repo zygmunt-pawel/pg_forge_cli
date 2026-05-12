@@ -80,6 +80,7 @@ mod tests {
                 host_port: 5433,
                 backup_enabled: false,
                 volume_name_override: None,
+                retain_days: 30,
             },
             created_at: "2026-05-12T10:00:00Z".into(),
         };

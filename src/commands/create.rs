@@ -32,6 +32,9 @@ pub struct CreateArgs {
     /// `pgforge restore`, `pgforge clone` will refuse to operate on it.
     /// Intended for dev / test instances where S3 is unavailable.
     pub no_backup: bool,
+    /// pgbackrest retention in days (passed through to Instance.retain_days
+    /// and pgbackrest.conf). Default 30. 0 = keep all fulls forever.
+    pub retain_days: u32,
 }
 
 pub struct ConfigLayout {
@@ -141,7 +144,7 @@ pub async fn run_with_engine<E: DockerEngine>(
         // pgbackrest.conf carries S3 access_key + secret_key.
         crate::util::fs::write_secret(
             &layout.pgbackrest_conf,
-            generate_pgbackrest_conf(&args.name, s3),
+            generate_pgbackrest_conf(&args.name, s3, args.retain_days),
         )?;
         let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
         crate::util::fs::create_secret_dir(&init_dir)?;
@@ -350,6 +353,7 @@ async fn bootstrap_create<E: DockerEngine>(
             host_port,
             backup_enabled: !args.no_backup,
             volume_name_override: None,
+            retain_days: args.retain_days,
         },
         created_at: crate::time::now_iso(),
     })
@@ -459,6 +463,7 @@ mod tests {
                 pgbackrest_password: "rpw".into(),
                 override_state_root: Some(tmp.path().to_path_buf()),
                 no_backup: false,
+                retain_days: 30,
             },
             &engine,
             tmp.path().to_path_buf(),

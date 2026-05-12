@@ -46,6 +46,7 @@ async fn create_tiny_instance_then_cleanup() {
             pgbackrest_password: "rpw".into(),
             override_state_root: Some(tmp.path().to_path_buf()),
             no_backup: false,
+        retain_days: 30,
         },
         &docker,
         tmp.path().to_path_buf(),

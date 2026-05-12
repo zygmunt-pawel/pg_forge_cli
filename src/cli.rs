@@ -138,6 +138,12 @@ pub enum Command {
         /// nothing to back it up.
         #[arg(long)]
         no_backup: bool,
+        /// pgbackrest retention window in days. After each new full
+        /// backup, pgbackrest deletes any full older than this along
+        /// with the WAL needed to recover from it. 0 = keep forever.
+        /// Default 30 ≈ RDS Standard retention.
+        #[arg(long, default_value_t = 30)]
+        retain_days: u32,
     },
 }
 
@@ -353,6 +359,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             app_password,
             pgbackrest_password,
             no_backup,
+            retain_days,
         }) => {
             let state = run_create(CreateArgs {
                 name,
@@ -363,6 +370,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 pgbackrest_password,
                 override_state_root: None,
                 no_backup,
+                retain_days,
             })
             .await?;
             let i = &state.instance;

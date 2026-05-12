@@ -124,6 +124,7 @@ pub struct CreateRequest {
     pub pg_version: u8,
     pub preset: crate::domain::preset::Preset,
     pub no_backup: bool,
+    pub retain_days: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -165,7 +166,10 @@ pub enum Modal {
         pg_version: TextField,
         preset: crate::domain::preset::Preset,
         no_backup: bool,
-        /// 0=name, 1=app_user, 2=pg_version, 3=preset, 4=no_backup
+        /// Retention window in days for pgbackrest full backups.
+        /// 0 = keep forever. Default 30. Numeric cycler on focus==5.
+        retain_days: u32,
+        /// 0=name, 1=app_user, 2=pg_version, 3=preset, 4=no_backup, 5=retain_days
         focus: u8,
         /// Pre-generated password, stashed here so submit can pick it
         /// up without re-generating. Not displayed in the modal body

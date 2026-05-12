@@ -38,6 +38,7 @@ async fn create_nobackup_tiny_instance() {
             pgbackrest_password: String::new(),
             override_state_root: Some(tmp.path().to_path_buf()),
             no_backup: true,
+        retain_days: 30,
         },
         &docker,
         tmp.path().to_path_buf(),

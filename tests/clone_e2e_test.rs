@@ -46,6 +46,7 @@ async fn clone_running_instance_is_reachable() {
             pgbackrest_password: "rpw".into(),
             override_state_root: Some(state_root.clone()),
             no_backup: false,
+        retain_days: 30,
         },
         &docker,
         state_root.clone(),

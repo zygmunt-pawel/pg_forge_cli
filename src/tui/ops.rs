@@ -174,6 +174,7 @@ async fn run_create(req: crate::tui::events::CreateRequest, state_root: Option<P
         pgbackrest_password: req.pgbackrest_password,
         override_state_root: state_root,
         no_backup: req.no_backup,
+        retain_days: req.retain_days,
     })
     .await?;
     Ok(())

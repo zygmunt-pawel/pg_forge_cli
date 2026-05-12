@@ -116,7 +116,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     // pgbackrest.conf carries S3 access_key + secret_key.
     crate::util::fs::write_secret(
         &pgbackrest_conf,
-        generate_pgbackrest_conf(&args.source, &s3),
+        generate_pgbackrest_conf(&args.source, &s3, 30),
     )?;
     std::fs::write(
         &entrypoint,
@@ -278,6 +278,7 @@ async fn bootstrap_restore<E: DockerEngine>(
             // rejected post-promote, that's a Plan 4 known limitation).
             backup_enabled: source.instance.backup_enabled,
             volume_name_override: None,
+            retain_days: source.instance.retain_days,
         },
         created_at: crate::time::now_iso(),
     })
