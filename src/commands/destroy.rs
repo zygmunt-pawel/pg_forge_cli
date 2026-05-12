@@ -206,6 +206,7 @@ mod tests {
                 retain_days: 30,
                 snapshot_hour: Some(3),
                 last_snapshot_at: None,
+                last_snapshot_attempt_at: None,
             },
             created_at: "2026-05-12T10:00:00Z".into(),
         };

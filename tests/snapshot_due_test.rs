@@ -22,7 +22,7 @@ fn redact_strips_repo1_s3_key_lines() {
 
 #[test]
 fn never_snapshotted_with_zero_hour_does_not_panic() {
-    let _ = is_snapshot_due(0, None);
+    let _ = is_snapshot_due(0, None, None);
 }
 
 #[test]
@@ -30,6 +30,20 @@ fn unparseable_last_is_not_due() {
     // The previous behavior returned true on parse failure → storm.
     // We now treat unparseable as "skip this tick" so the scheduler
     // doesn't loop on a corrupt state.toml.
-    assert!(!is_snapshot_due(0, Some("garbage")),
+    assert!(!is_snapshot_due(0, Some("garbage"), None),
         "garbage timestamp must NOT trigger a re-snapshot");
+}
+
+#[test]
+fn recent_failed_attempt_backs_off() {
+    let recent = pgforge::time::now_iso();
+    assert!(!is_snapshot_due(0, None, Some(&recent)));
+}
+
+#[test]
+fn old_failed_attempt_does_not_back_off() {
+    // Construct a timestamp 2 hours in the past
+    let two_hours_ago = jiff::Timestamp::now().as_second() - 7200;
+    let ts = jiff::Timestamp::from_second(two_hours_ago).unwrap().to_string();
+    assert!(is_snapshot_due(0, None, Some(&ts)));
 }

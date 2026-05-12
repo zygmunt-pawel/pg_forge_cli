@@ -48,6 +48,11 @@ pub struct Instance {
     /// snapshot yet.
     #[serde(default)]
     pub last_snapshot_at: Option<String>,
+    /// Most recent time we *tried* a snapshot, regardless of outcome. Set even
+    /// on failure. Prevents the launchd tick from retrying continuously for the
+    /// rest of the day when something is wrong (e.g. S3 unreachable).
+    #[serde(default)]
+    pub last_snapshot_attempt_at: Option<String>,
 }
 
 fn backup_enabled_default() -> bool {

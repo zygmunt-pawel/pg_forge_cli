@@ -35,7 +35,11 @@ pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
         let Some(hour) = state.instance.snapshot_hour else {
             continue;
         };
-        if !is_snapshot_due(hour, state.instance.last_snapshot_at.as_deref()) {
+        if !is_snapshot_due(
+            hour,
+            state.instance.last_snapshot_at.as_deref(),
+            state.instance.last_snapshot_attempt_at.as_deref(),
+        ) {
             continue;
         }
         tracing::info!(target: "pgforge::snapshot::due",
@@ -47,6 +51,12 @@ pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
         }).await {
             tracing::warn!(target: "pgforge::snapshot::due",
                 "due snapshot for {name} failed: {e}");
+            if let Ok(_lock) = crate::util::fs::LockedStateRoot::acquire(&state_root) {
+                if let Ok(mut s) = crate::state::instance::InstanceState::load_under(&state_root, &name) {
+                    s.instance.last_snapshot_attempt_at = Some(crate::time::now_iso());
+                    let _ = s.save_under(&state_root);
+                }
+            }
             continue;
         }
         count += 1;
@@ -56,8 +66,13 @@ pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
 
 /// True iff:
 ///   1. the hour has already passed today in local time, AND
-///   2. last_snapshot_at is None OR it's older than today's window-open time.
-pub fn is_snapshot_due(hour: u8, last_snapshot_at: Option<&str>) -> bool {
+///   2. last_snapshot_at is None OR it's older than today's window-open time, AND
+///   3. last_snapshot_attempt_at is None OR it's older than 1 hour (backoff after failures).
+pub fn is_snapshot_due(
+    hour: u8,
+    last_ok: Option<&str>,
+    last_attempt: Option<&str>,
+) -> bool {
     use std::str::FromStr;
     let zoned_now = jiff::Zoned::now();
     let today = zoned_now.date();
@@ -68,18 +83,28 @@ pub fn is_snapshot_due(hour: u8, last_snapshot_at: Option<&str>) -> bool {
     if now_secs < hour_secs {
         return false; // window hasn't opened yet today
     }
-    let Some(last) = last_snapshot_at else {
-        return true; // never snapshotted
-    };
-    let Ok(last_ts) = jiff::Timestamp::from_str(last) else {
-        tracing::warn!(target: "pgforge::snapshot::due",
-            "unparseable last_snapshot_at {last:?}; skipping this tick (clear with `pgforge snapshot --reset` if intentional)");
-        return false;
-    };
-    // Convert last snapshot to the local zone so "today" comparison
-    // matches the user's expectation.
-    let last_zoned = last_ts.to_zoned(zoned_now.time_zone().clone());
-    last_zoned.date() != today
+    if let Some(last) = last_ok {
+        if let Ok(ts) = jiff::Timestamp::from_str(last) {
+            if ts.to_zoned(zoned_now.time_zone().clone()).date() == today {
+                return false; // already covered today
+            }
+        } else {
+            tracing::warn!(target: "pgforge::snapshot::due",
+                "unparseable last_snapshot_at {last:?}; skipping");
+            return false;
+        }
+    }
+    if let Some(att) = last_attempt {
+        if let Ok(ts) = jiff::Timestamp::from_str(att) {
+            let age = (jiff::Timestamp::now().as_second() - ts.as_second()).max(0);
+            if age < 3600 {
+                tracing::info!(target: "pgforge::snapshot::due",
+                    "recent failed attempt {att:?} ({age}s ago); backing off");
+                return false;
+            }
+        }
+    }
+    true
 }
 
 pub async fn run(args: SnapshotArgs) -> Result<SnapshotRecord> {
@@ -173,6 +198,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let mut state =
         crate::state::instance::InstanceState::load_under(&state_root, &args.instance)?;
     state.instance.last_snapshot_at = Some(record.taken_at.clone());
+    state.instance.last_snapshot_attempt_at = Some(record.taken_at.clone());
     state.save_under(&state_root)?;
     drop(_lock);
 
