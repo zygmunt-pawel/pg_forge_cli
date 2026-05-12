@@ -1,4 +1,5 @@
 use pgforge::util::fs::{atomic_write, create_secret_dir, write_secret};
+use pgforge::util::fs::LockedStateRoot;
 
 #[test]
 fn write_secret_sets_mode_0600_on_unix() {
@@ -88,4 +89,33 @@ fn atomic_write_leaves_no_tmp_on_success() {
         .filter(|e| e.file_name() != std::ffi::OsString::from("a.toml"))
         .collect();
     assert!(leftovers.is_empty(), "found: {:?}", leftovers);
+}
+
+#[test]
+fn locked_state_root_is_exclusive() {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let o1 = order.clone();
+    let r1 = root.clone();
+    let t1 = thread::spawn(move || {
+        let _g = LockedStateRoot::acquire(&r1).unwrap();
+        o1.lock().unwrap().push("t1-acquired");
+        thread::sleep(Duration::from_millis(200));
+        o1.lock().unwrap().push("t1-released");
+    });
+    thread::sleep(Duration::from_millis(50));
+    let o2 = order.clone();
+    let r2 = root.clone();
+    let t2 = thread::spawn(move || {
+        let _g = LockedStateRoot::acquire(&r2).unwrap();
+        o2.lock().unwrap().push("t2-acquired");
+    });
+    t1.join().unwrap();
+    t2.join().unwrap();
+    let o = order.lock().unwrap().clone();
+    assert_eq!(o, vec!["t1-acquired", "t1-released", "t2-acquired"]);
 }

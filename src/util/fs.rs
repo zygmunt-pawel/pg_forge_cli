@@ -1,4 +1,5 @@
 use crate::error::{PgForgeError, Result};
+use std::fs::File;
 use std::path::Path;
 
 /// Write `content` to `path` atomically: write to `path.<pid>.tmp` in the same
@@ -70,4 +71,41 @@ pub fn create_secret_dir(path: &Path) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Exclusive advisory lock over a state root. Held while a process mutates
+/// any state.toml / snapshots.toml under `state_root`. Released on drop.
+///
+/// Multiple writers (CLI, TUI, launchd snapshot --due tick) would otherwise
+/// race and last-writer-wins, silently losing updates and occasionally
+/// corrupting files mid-write. Acquire BEFORE load → mutate → atomic-write
+/// → release.
+pub struct LockedStateRoot {
+    _file: File,
+}
+
+impl LockedStateRoot {
+    pub fn acquire(state_root: &Path) -> Result<Self> {
+        use fs2::FileExt;
+        std::fs::create_dir_all(state_root).map_err(|e| PgForgeError::Io {
+            path: state_root.to_path_buf(),
+            source: e,
+        })?;
+        let lock_path = state_root.join(".pgforge.lock");
+        let file = File::options()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| PgForgeError::Io {
+                path: lock_path.clone(),
+                source: e,
+            })?;
+        file.lock_exclusive().map_err(|e| PgForgeError::Io {
+            path: lock_path,
+            source: e,
+        })?;
+        Ok(Self { _file: file })
+    }
 }
