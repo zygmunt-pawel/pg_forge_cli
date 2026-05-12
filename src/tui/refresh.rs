@@ -28,11 +28,17 @@ pub fn spawn_pollers(
 fn spawn_ls(tx: UnboundedSender<Event>, state_root: Option<PathBuf>) {
     tokio::spawn(async move {
         let mut iv = tokio::time::interval(LS_PERIOD);
+        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             iv.tick().await;
-            match ls::run(ls::LsArgs { override_state_root: state_root.clone() }).await {
-                Ok(rows) => { let _ = tx.send(Event::InstancesListed(rows)); }
-                Err(e)   => { tracing::warn!(target: "pgforge::tui", "ls poller: {e}"); }
+            let r = tokio::time::timeout(
+                Duration::from_secs(5),
+                ls::run(ls::LsArgs { override_state_root: state_root.clone() }),
+            ).await;
+            match r {
+                Ok(Ok(rows)) => { let _ = tx.send(Event::InstancesListed(rows)); }
+                Ok(Err(e))   => { tracing::warn!(target: "pgforge::tui::refresh", "ls poller: {e}"); }
+                Err(_)       => { tracing::warn!(target: "pgforge::tui::refresh", "ls poller: docker call timed out after 5s; marking stale"); }
             }
         }
     });
@@ -60,12 +66,21 @@ fn spawn_status(
             };
             let root = state_root.clone().unwrap_or_else(InstanceState::default_state_root);
             for n in names {
-                match status::run_with_engine(
-                    status::StatusArgs { name: n.clone(), override_state_root: Some(root.clone()) },
-                    &docker, root.clone(),
-                ).await {
-                    Ok(s)  => { let _ = tx.send(Event::StatusRefreshed { name: n, status: s }); }
-                    Err(e) => { let _ = tx.send(Event::RefreshFailed { name: n, err: e.to_string() }); }
+                let r = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    status::run_with_engine(
+                        status::StatusArgs { name: n.clone(), override_state_root: Some(root.clone()) },
+                        &docker, root.clone(),
+                    ),
+                ).await;
+                match r {
+                    Ok(Ok(s))  => { let _ = tx.send(Event::StatusRefreshed { name: n, status: s }); }
+                    Ok(Err(e)) => { let _ = tx.send(Event::RefreshFailed { name: n, err: e.to_string() }); }
+                    Err(_)     => {
+                        tracing::warn!(target: "pgforge::tui::refresh",
+                            "status poller: docker call timed out after 5s for {n}; marking stale");
+                        let _ = tx.send(Event::RefreshFailed { name: n, err: "docker call timed out".to_string() });
+                    }
                 }
             }
         }
@@ -89,7 +104,18 @@ fn spawn_snapshots(
                 let list = match snapshots::run(&n, Some(root.clone())) {
                     Ok(l) => l, Err(_) => Vec::new(),
                 };
-                let pitr = snapshots::pitr_window(&n, &docker, &root).await.unwrap_or_default();
+                let pitr = match tokio::time::timeout(
+                    Duration::from_secs(5),
+                    snapshots::pitr_window(&n, &docker, &root),
+                ).await {
+                    Ok(Ok(w))  => w,
+                    Ok(Err(_)) => Default::default(),
+                    Err(_)     => {
+                        tracing::warn!(target: "pgforge::tui::refresh",
+                            "snapshots poller: docker call timed out after 5s for {n}; marking stale");
+                        Default::default()
+                    }
+                };
                 let _ = tx.send(Event::SnapshotsRefreshed { name: n, view: SnapshotsView { list, pitr } });
             }
         }
