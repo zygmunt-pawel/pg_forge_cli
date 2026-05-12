@@ -176,6 +176,26 @@ impl AppState {
                     });
                 }
             }
+            KeyCode::Char('d') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::Confirm {
+                        kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: false },
+                        prompt: format!(
+                            "Destroy {n}? This drops the container AND its data volume. S3 backups are RETAINED — restore later with `pgforge restore`. Press [D] (shift) to also wipe S3 backups."
+                        ),
+                    });
+                }
+            }
+            KeyCode::Char('D') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::Confirm {
+                        kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: true },
+                        prompt: format!(
+                            "Destroy {n} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
+                        ),
+                    });
+                }
+            }
             KeyCode::Char('?') => {
                 if let Some(e) = &self.last_op_error {
                     self.modal = Some(Modal::ErrorDetail { msg: e.msg.clone() });
@@ -340,6 +360,14 @@ impl AppState {
                         None    => format!("{source}:{as_}"),
                     };
                     self.pending_ops.push((key, OpKind::Restore));
+                }
+                PendingDestructiveOp::Destroy { name, delete_backups } => {
+                    // Encoding: "name" = keep S3 backups; "name@delete" = wipe.
+                    // ops::spawn decodes via parse_at — a literal "delete" suffix
+                    // can't collide with a u8 version (the only other thing that
+                    // uses @) because OpKind tags the destination dispatcher.
+                    let key = if delete_backups { format!("{name}@delete") } else { name };
+                    self.pending_ops.push((key, OpKind::Destroy));
                 }
             }
         }

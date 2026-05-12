@@ -1,5 +1,6 @@
 pub mod clone;
 pub mod create;
+pub mod destroy;
 pub mod ls;
 pub mod reconfigure;
 pub mod restore;

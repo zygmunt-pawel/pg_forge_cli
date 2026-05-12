@@ -35,6 +35,15 @@ pub fn spawn(
                 let (src, as_, tt) = parse_colon_at(&encoded);
                 (src.clone(), Box::pin(run_restore(src, as_, tt, state_root)))
             }
+            OpKind::Destroy => {
+                // Encoding: "name" = keep S3 backups; "name@delete" = wipe.
+                let (name, suffix) = match encoded.split_once('@') {
+                    Some((n, s)) => (n.to_string(), s.to_string()),
+                    None         => (encoded.clone(), String::new()),
+                };
+                let delete_backups = suffix == "delete";
+                (name.clone(), Box::pin(run_destroy(name, delete_backups, state_root)))
+            }
             OpKind::Clipboard => {
                 // Clipboard is sync and never spawned; this branch is
                 // unreachable in practice but must be exhaustive.
@@ -94,5 +103,11 @@ async fn run_upgrade(name: String, to_version: u8, state_root: Option<PathBuf>) 
 async fn run_restore(source: String, as_name: String, target_time: Option<String>, state_root: Option<PathBuf>) -> Result<()> {
     use crate::commands::restore::{run, RestoreArgs};
     run(RestoreArgs { source, as_name, target_time, override_state_root: state_root }).await?;
+    Ok(())
+}
+
+async fn run_destroy(name: String, delete_backups: bool, state_root: Option<PathBuf>) -> Result<()> {
+    use crate::commands::destroy::{run, DestroyArgs};
+    run(DestroyArgs { name, delete_backups, override_state_root: state_root }).await?;
     Ok(())
 }

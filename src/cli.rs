@@ -73,6 +73,24 @@ pub enum Command {
         #[arg(long = "to")]
         to_version: u8,
     },
+    /// Permanently delete an instance: stop + remove container, drop
+    /// data volume, remove state.toml. Optionally also wipe S3 backups
+    /// (full + WAL archives + PITR window) via pgbackrest stanza-delete.
+    Destroy {
+        #[arg(long)]
+        name: String,
+        /// Also remove the pgbackrest stanza from S3 (full backups,
+        /// diff backups, WAL archives — PITR becomes unrecoverable).
+        /// Requires the container to be running so pgbackrest can be
+        /// exec'd. Ignored for --no-backup instances.
+        #[arg(long)]
+        delete_backups: bool,
+        /// Skip the interactive confirmation prompt. Required for
+        /// scripts; for interactive use you should NOT pass this and
+        /// type the instance name to confirm.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Create a new hardened PG instance.
     Create {
         /// Instance name (lowercase, [a-z][a-z0-9_-]{0,62}).
@@ -243,6 +261,47 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("Upgraded {name} to PostgreSQL {to_version}.");
+            Ok(())
+        }
+        Some(Command::Destroy { name, delete_backups, yes }) => {
+            // Interactive guard: load state to confirm instance exists and
+            // print what's about to be destroyed, then require the user to
+            // type the instance name back. Skipped with --yes.
+            let state_root = crate::state::instance::InstanceState::default_state_root();
+            let state = crate::state::instance::InstanceState::load_under(&state_root, &name)?;
+            if !yes {
+                use std::io::{BufRead, Write};
+                eprintln!("Destroy instance '{name}'. This will delete:");
+                eprintln!("  • docker container pgforge_{name}");
+                eprintln!("  • docker volume {} (LOCAL DATA LOSS)", state.instance.volume_name());
+                eprintln!("  • state dir + secrets under {}/instances/{name}/", state_root.display());
+                if delete_backups {
+                    if state.instance.backup_enabled {
+                        eprintln!("  • ALL S3 backups for this instance (full + diff + WAL archives, NO PITR recoverable afterwards)");
+                    } else {
+                        eprintln!("  (--delete-backups is a no-op: instance is --no-backup)");
+                    }
+                } else if state.instance.backup_enabled {
+                    eprintln!("  (S3 backups are RETAINED — re-use with `pgforge restore` later, or destroy them with `--delete-backups`)");
+                }
+                eprint!("Type the instance name '{name}' to confirm (or anything else to abort): ");
+                std::io::stderr().flush().ok();
+                let mut line = String::new();
+                std::io::stdin().lock().read_line(&mut line).map_err(|e| {
+                    crate::error::PgForgeError::Anyhow(anyhow::anyhow!("stdin read: {e}"))
+                })?;
+                if line.trim() != name {
+                    eprintln!("Aborted — name did not match.");
+                    return Ok(());
+                }
+            }
+            crate::commands::destroy::run(crate::commands::destroy::DestroyArgs {
+                name: name.clone(),
+                delete_backups,
+                override_state_root: None,
+            })
+            .await?;
+            println!("Destroyed {name}.");
             Ok(())
         }
         Some(Command::Create {

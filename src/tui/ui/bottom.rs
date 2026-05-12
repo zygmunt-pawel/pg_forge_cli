@@ -45,7 +45,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     }
     f.render_widget(
         Paragraph::new(
-            "[s]napshot  [c]lone  [R]otate  [u]pgrade  [r]estore  [↵] copy-uri  [q]uit"
+            "[s]nap [c]lone [R]otate [u]pgrade [r]estore [d]estroy [↵] copy [q]uit"
         ),
         area,
     );

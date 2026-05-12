@@ -30,7 +30,7 @@ pub struct SnapshotsView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
-    Snapshot, Clone, Rotate, Upgrade, Restore,
+    Snapshot, Clone, Rotate, Upgrade, Restore, Destroy,
     /// Sentinel for clipboard-copy failures. NEVER appears in
     /// `AppState::in_progress` (clipboard is sync, runs inline in the
     /// main loop), only in `OpError::kind` for rendering.
@@ -45,6 +45,7 @@ impl OpKind {
             OpKind::Rotate    => "rotate",
             OpKind::Upgrade   => "upgrade",
             OpKind::Restore   => "restore",
+            OpKind::Destroy   => "destroy",
             OpKind::Clipboard => "copy",
         }
     }
@@ -105,6 +106,7 @@ pub enum PendingDestructiveOp {
     Rotate { name: String },
     Upgrade { name: String, to: u8 },
     Restore { source: String, as_: String, target_time: Option<String> },
+    Destroy { name: String, delete_backups: bool },
 }
 
 #[derive(Debug, Clone)]
