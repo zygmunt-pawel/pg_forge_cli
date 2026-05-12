@@ -451,6 +451,9 @@ mod tests {
         async fn inspect_container(&self, _name: &str) -> crate::error::Result<crate::docker::engine::ContainerInspect> {
             Ok(crate::docker::engine::ContainerInspect::default())
         }
+        async fn logs(&self, _container: &str) -> crate::error::Result<String> {
+            Ok(String::new())
+        }
     }
 
     #[tokio::test]

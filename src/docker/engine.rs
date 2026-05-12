@@ -125,6 +125,12 @@ pub trait DockerEngine: Send + Sync {
     /// container since it was first created (so > 0 implies the container
     /// has crashed at least once and Docker recovered it).
     async fn inspect_container(&self, name: &str) -> Result<ContainerInspect>;
+
+    /// Fetch the combined stdout+stderr of a container as a String.
+    /// Best-effort: returns `""` on any retrieval error (used for
+    /// diagnostics only, never for control flow). Capped at the last 200
+    /// lines so the error message stays readable.
+    async fn logs(&self, container: &str) -> Result<String>;
 }
 
 #[derive(Debug, Clone, Default)]

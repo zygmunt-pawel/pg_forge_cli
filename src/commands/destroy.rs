@@ -187,6 +187,9 @@ mod tests {
         async fn inspect_container(&self, _name: &str) -> Result<crate::docker::engine::ContainerInspect> {
             Ok(crate::docker::engine::ContainerInspect::default())
         }
+        async fn logs(&self, _container: &str) -> Result<String> {
+            Ok(String::new())
+        }
     }
 
     fn write_state(state_root: &std::path::Path, name: &str, backup_enabled: bool) {

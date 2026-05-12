@@ -183,26 +183,22 @@ pub async fn run_with_engine<E: DockerEngine>(
     // 7. Wait for completion. pg_upgrade against a small DB is seconds;
     // against a multi-GB DB can be many minutes. Allow 1h.
     let exit_code = docker.wait_for_container_exit(&id, Duration::from_secs(3600)).await?;
-    // Capture logs whether we succeeded or failed — they include pg_upgrade
-    // output that the user needs to diagnose.
-    let logs_exec = docker
-        .exec(&id, &["true"])
-        .await
-        .ok(); // best-effort; if container is gone we just don't have logs
-    let _ = logs_exec;
 
     if exit_code != 0 {
-        // 8a. Failure: remove new volume, leave old volume + pre-upgrade
-        // snapshot intact. Don't auto-restart the old container — the user
-        // should investigate before resuming. Surface the entrypoint
-        // failure to them.
+        // 8a. Failure: capture logs BEFORE removal so the user can see
+        // pg_upgrade's actual stderr, then remove the upgrade container
+        // and the half-initialised new volume. Leave the old volume and
+        // pre-upgrade snapshot intact for rollback.
+        let raw_logs = docker.logs(&upgrade_container).await.unwrap_or_default();
+        let logs = crate::commands::snapshot::redact_pgbackrest_output(&raw_logs);
         let _ = docker.remove_container(&upgrade_container, true).await;
         let _ = docker.remove_volume(&new_volume).await;
         return Err(PgForgeError::Docker(format!(
-            "pg_upgrade failed (exit {exit_code}). Old data volume {old_volume:?} is intact; \
+            "pg_upgrade failed (exit {exit_code}). \
+             Old data volume {old_volume:?} is intact; \
              pre-upgrade snapshot is available via `pgforge snapshots --name {}`. \
-             Inspect upgrade container logs (`docker logs {upgrade_container}` would have helped — \
-             container was removed). To resume the OLD instance: re-run `pgforge rotate --name {}`.",
+             To resume the OLD instance: re-run `pgforge rotate --name {}`.\n\
+             pg_upgrade output:\n{logs}",
             state.instance.name, state.instance.name
         )));
     }

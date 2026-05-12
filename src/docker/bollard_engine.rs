@@ -519,4 +519,35 @@ impl DockerEngine for BollardEngine {
             ))),
         }
     }
+
+    async fn logs(&self, container: &str) -> Result<String> {
+        use bollard::container::LogOutput;
+        use bollard::query_parameters::LogsOptionsBuilder;
+
+        let opts = LogsOptionsBuilder::default()
+            .stdout(true)
+            .stderr(true)
+            .tail("200")
+            .build();
+
+        let mut stream = self.docker.logs(container, Some(opts));
+        let mut buf = String::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => match chunk {
+                    LogOutput::StdOut { message }
+                    | LogOutput::StdErr { message }
+                    | LogOutput::Console { message } => {
+                        buf.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    LogOutput::StdIn { .. } => {}
+                },
+                Err(e) => {
+                    tracing::debug!(target: "pgforge::docker::logs", "log stream error: {e}");
+                    break;
+                }
+            }
+        }
+        Ok(buf)
+    }
 }
