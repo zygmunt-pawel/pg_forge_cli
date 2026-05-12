@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-universal:
+    name: Build macOS universal binary
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + both Apple targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build aarch64 (Apple Silicon)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64 (Intel)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Lipo universal binary
+        run: |
+          mkdir -p dist
+          lipo -create \
+            target/aarch64-apple-darwin/release/pgforge \
+            target/x86_64-apple-darwin/release/pgforge \
+            -output dist/pgforge
+          file dist/pgforge
+          chmod +x dist/pgforge
+
+      - name: Strip + checksum + tarball
+        run: |
+          strip dist/pgforge
+          (cd dist && tar -czf pgforge-macos-universal.tar.gz pgforge && shasum -a 256 pgforge pgforge-macos-universal.tar.gz > SHA256SUMS)
+          ls -lah dist/
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/pgforge
+            dist/pgforge-macos-universal.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true
+          draft: false
+          prerelease: false

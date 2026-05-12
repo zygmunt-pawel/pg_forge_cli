@@ -4,21 +4,39 @@ RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
 
 ## Status
 
-**Plan 1 (foundation + create) — implemented.**  
-**Plan 2 (snapshot + restore PITR) — implemented.**  
-**Plan 3 (clone via pg_basebackup) — implemented.**  
-**Plan 3.5 (security + reliability hardening) — implemented.**  
-**Plan 4 (upgrade, rotate, ls, status, --no-backup) — implemented.**  
-TUI dashboard comes in Plan 5.
+**Plans 1-5 — implemented.** Foundation + create, snapshot/restore PITR, clone
+via pg_basebackup, security hardening, upgrade/rotate/ls/status, and the
+ratatui TUI dashboard. 150 unit tests green.
 
-## Quick start
+## Install
 
-1. Install Rust 1.80+ and a working Docker engine (OrbStack > Docker Desktop on macOS for performance).
+**macOS (universal binary, works on Apple Silicon + Intel):**
+```bash
+curl -L https://github.com/zygmunt-pawel/pg_forge_cli/releases/latest/download/pgforge \
+  -o /usr/local/bin/pgforge
+chmod +x /usr/local/bin/pgforge
+xattr -d com.apple.quarantine /usr/local/bin/pgforge 2>/dev/null || true
+pgforge --version
+```
+
+That's all you need on the target machine besides a Docker engine — install
+[OrbStack](https://orbstack.dev) (recommended, faster than Docker Desktop on
+macOS) and you're set.
+
+## Building from source
+
+Only needed if you're developing on pgforge itself.
+
+1. Install Rust 1.80+ and a working Docker engine.
 2. Build:
    ```bash
    cargo build --release
    ```
-3. Configure S3 credentials. Create `~/.config/pgforge/config.toml` (Linux) or
+
+## Quick start
+
+1. Install pgforge (see above) and start your Docker engine.
+2. Configure S3 credentials. Create `~/.config/pgforge/config.toml` (Linux) or
    `~/Library/Application Support/pgforge/config.toml` (macOS):
    ```toml
    port_range_start = 5433
@@ -31,24 +49,24 @@ TUI dashboard comes in Plan 5.
    access_key = "AKIA…"
    secret_key = "…"
    ```
-4. Spawn an instance:
+3. Spawn an instance:
    ```bash
    PGFORGE_APP_PASSWORD=changeme \
    PGFORGE_PGBACKREST_PASSWORD=changeme2 \
-   ./target/release/pgforge create \
+   pgforge create \
        --name billing \
        --preset tiny \
        --version 18
    ```
    For local dev / testing without S3, pass `--no-backup`:
    ```bash
-   PGFORGE_APP_PASSWORD=pw ./target/release/pgforge create \
+   PGFORGE_APP_PASSWORD=pw pgforge create \
        --name dev --preset tiny --version 18 --no-backup
    ```
    No-backup instances run hardened postgres but don't push WAL anywhere
    and refuse `snapshot` / `clone` / `restore`.
 
-5. Connect:
+4. Connect:
    ```bash
    psql "postgresql://leads:changeme@127.0.0.1:<port>/billing"
    ```
