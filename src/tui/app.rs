@@ -260,13 +260,20 @@ impl AppState {
             }
             KeyCode::Char('r') => {
                 if let Some(n) = self.selected_name().map(str::to_string) {
+                    let pitr_earliest = self
+                        .snapshots
+                        .get(&n)
+                        .and_then(|v| v.pitr.earliest.clone());
                     self.modal = Some(Modal::RestoreAs {
                         source: n,
                         as_input: TextField::default(),
                         // 0 = "latest archived WAL" (no --target-time at all).
-                        // Arrow keys bump this in 1-minute steps.
+                        // Arrow keys bump this in 1-minute steps; capped at
+                        // (now - pitr_earliest) so the user can't pick a
+                        // time before the earliest available backup.
                         minutes_ago: 0,
                         focus: 0,
+                        pitr_earliest,
                     });
                 }
             }
@@ -360,32 +367,36 @@ impl AppState {
                 KeyCode::Enter => Action::Submit,
                 _ => Action::Nothing,
             },
-            Some(Modal::RestoreAs { as_input, minutes_ago, focus, .. }) => match k.code {
-                KeyCode::Tab => { *focus = (*focus + 1) % 2; Action::Nothing }
-                KeyCode::Enter => Action::Submit,
-                _ if *focus == 0 => match k.code {
-                    KeyCode::Char(c) if !c.is_control() => { as_input.insert_char(c); Action::Nothing }
-                    KeyCode::Backspace => { as_input.backspace(); Action::Nothing }
-                    KeyCode::Left  => { as_input.move_left();  Action::Nothing }
-                    KeyCode::Right => { as_input.move_right(); Action::Nothing }
-                    _ => Action::Nothing,
-                },
-                // focus == 1: minutes_ago picker. ← decrements (saturating
-                // at 0 = "latest"), → increments. Space cycles forward in
-                // bigger steps; digit keys jump by powers of 10 for fast
-                // back-in-time navigation.
-                _ => match k.code {
-                    KeyCode::Left  => { *minutes_ago = minutes_ago.saturating_sub(1); Action::Nothing }
-                    KeyCode::Right => { *minutes_ago = minutes_ago.saturating_add(1); Action::Nothing }
-                    KeyCode::Char(' ') => { *minutes_ago = minutes_ago.saturating_add(5); Action::Nothing }
-                    KeyCode::Backspace => { *minutes_ago /= 10; Action::Nothing }
-                    KeyCode::Char(d) if d.is_ascii_digit() => {
-                        let v = d.to_digit(10).unwrap();
-                        // Append digit (like an old-school numeric input).
-                        *minutes_ago = minutes_ago.saturating_mul(10).saturating_add(v);
-                        Action::Nothing
+            Some(Modal::RestoreAs { as_input, minutes_ago, focus, pitr_earliest, .. }) => {
+                let cap = pitr_max_minutes_ago(pitr_earliest.as_deref());
+                let clamp = |m: u32| -> u32 { if let Some(c) = cap { m.min(c) } else { m } };
+                match k.code {
+                    KeyCode::Tab => { *focus = (*focus + 1) % 2; Action::Nothing }
+                    KeyCode::Enter => Action::Submit,
+                    _ if *focus == 0 => match k.code {
+                        KeyCode::Char(c) if !c.is_control() => { as_input.insert_char(c); Action::Nothing }
+                        KeyCode::Backspace => { as_input.backspace(); Action::Nothing }
+                        KeyCode::Left  => { as_input.move_left();  Action::Nothing }
+                        KeyCode::Right => { as_input.move_right(); Action::Nothing }
+                        _ => Action::Nothing,
+                    },
+                    // focus == 1: minutes_ago picker. ← decrements (saturating
+                    // at 0 = "latest"), → increments. Space cycles forward in
+                    // bigger steps; digit keys append. All bumps clamped to
+                    // the PITR window (no point picking a time before the
+                    // earliest full backup).
+                    _ => match k.code {
+                        KeyCode::Left  => { *minutes_ago = minutes_ago.saturating_sub(1); Action::Nothing }
+                        KeyCode::Right => { *minutes_ago = clamp(minutes_ago.saturating_add(1)); Action::Nothing }
+                        KeyCode::Char(' ') => { *minutes_ago = clamp(minutes_ago.saturating_add(5)); Action::Nothing }
+                        KeyCode::Backspace => { *minutes_ago /= 10; Action::Nothing }
+                        KeyCode::Char(d) if d.is_ascii_digit() => {
+                            let v = d.to_digit(10).unwrap();
+                            *minutes_ago = clamp(minutes_ago.saturating_mul(10).saturating_add(v));
+                            Action::Nothing
+                        }
+                        _ => Action::Nothing,
                     }
-                    _ => Action::Nothing,
                 }
             },
             Some(Modal::Confirm { kind, prompt }) => match k.code {
@@ -532,13 +543,13 @@ impl AppState {
                     }
                 }
             }
-            Some(Modal::RestoreAs { source, as_input, minutes_ago, focus }) => {
+            Some(Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest }) => {
                 let as_ = as_input.buf.clone();
                 if let Err(msg) = validate_instance_name(&as_) {
                     self.last_op_error = Some(OpError {
                         instance: source.clone(), kind: OpKind::Restore, msg, at: Instant::now(),
                     });
-                    self.modal = Some(Modal::RestoreAs { source, as_input, minutes_ago, focus });
+                    self.modal = Some(Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest });
                     return;
                 }
                 // 0 = "latest archived WAL" — no --target-time. Else compute
@@ -693,6 +704,22 @@ impl AppState {
 
 /// Validator reused by clone+restore. Delegates to
 /// `domain::instance::Instance::validate_name` (single source of truth).
+/// Resolve PITR earliest (RFC3339) into "max minutes_ago" the user can
+/// pick in the Restore wizard, so they can't request a target_time
+/// before the oldest available backup. None when there's no PITR data
+/// yet — in that case we don't cap (defensive; submit_modal would just
+/// pass the raw timestamp through to pgbackrest which would error out
+/// loudly).
+pub(crate) fn pitr_max_minutes_ago(earliest: Option<&str>) -> Option<u32> {
+    use std::str::FromStr;
+    let e = earliest?;
+    let earliest = jiff::Timestamp::from_str(e).ok()?;
+    let now = jiff::Timestamp::now();
+    let secs = earliest.duration_until(now).as_secs();
+    if secs <= 0 { return Some(0); }
+    Some((secs as u64 / 60) as u32)
+}
+
 fn next_preset(p: crate::domain::preset::Preset) -> crate::domain::preset::Preset {
     use crate::domain::preset::Preset::*;
     match p { Tiny => Small, Small => Medium, Medium => Large, Large => Tiny }
@@ -1179,11 +1206,45 @@ mod tests {
             as_input: a,
             minutes_ago: 0,
             focus: 0,
+            pitr_earliest: None,
         });
         s.apply_event(key(KeyCode::Enter));
         assert!(matches!(s.modal, Some(Modal::Confirm {
             kind: PendingDestructiveOp::Restore { ref source, ref as_, target_time: None }, ..
         }) if source == "alpha" && as_ == "gamma"));
+    }
+
+    #[test]
+    fn restore_as_picker_caps_at_pitr_earliest() {
+        // PITR earliest 10 minutes ago → user can pick 0..=10, not more.
+        let earliest_10m_ago = (jiff::Timestamp::now()
+            - jiff::SignedDuration::from_secs(10 * 60))
+            .to_string();
+        let mut s = AppState::default();
+        s.modal = Some(Modal::RestoreAs {
+            source: "alpha".into(),
+            as_input: TextField::default(),
+            minutes_ago: 9,
+            focus: 1,
+            pitr_earliest: Some(earliest_10m_ago),
+        });
+        // Pressing → bumps to 10 (cap).
+        s.apply_event(key(KeyCode::Right));
+        if let Some(Modal::RestoreAs { minutes_ago, .. }) = s.modal {
+            assert_eq!(minutes_ago, 10);
+        } else { panic!("modal closed unexpectedly"); }
+        // Another → should stay at 10.
+        s.apply_event(key(KeyCode::Right));
+        if let Some(Modal::RestoreAs { minutes_ago, .. }) = s.modal {
+            assert_eq!(minutes_ago, 10, "saturate at PITR earliest");
+        } else { panic!(); }
+        // Typing a big number also gets clamped.
+        s.apply_event(key(KeyCode::Char('5')));
+        s.apply_event(key(KeyCode::Char('0')));
+        s.apply_event(key(KeyCode::Char('0')));
+        if let Some(Modal::RestoreAs { minutes_ago, .. }) = s.modal {
+            assert_eq!(minutes_ago, 10);
+        } else { panic!(); }
     }
 
     #[test]
@@ -1196,6 +1257,7 @@ mod tests {
             as_input: a,
             minutes_ago: 5,
             focus: 0,
+            pitr_earliest: None,
         });
         s.apply_event(key(KeyCode::Enter));
         let Some(Modal::Confirm { kind: PendingDestructiveOp::Restore { target_time, .. }, .. }) = &s.modal

@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     let (w, h) = match modal {
         Modal::CloneAs { .. } | Modal::UpgradeTo { .. } => (60, 9),
-        Modal::RestoreAs { .. } => (70, 13),
+        Modal::RestoreAs { .. } => (78, 13),
         Modal::Confirm { .. } => (60, 7),
         Modal::ErrorDetail { .. } => (80, 15),
         Modal::Snapshots { .. } => (80, 20),
@@ -24,12 +24,12 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     match modal {
         Modal::CloneAs { source, input } => single_input(f, area, &format!("Clone {source} as"), &input.buf, input.cursor),
         Modal::UpgradeTo { source, input } => single_input(f, area, &format!("Upgrade {source} — target version"), &input.buf, input.cursor),
-        Modal::RestoreAs { source, as_input, minutes_ago, focus } => {
+        Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest } => {
             let block = Block::default().title(format!(" Restore {source} ")).borders(Borders::ALL);
             f.render_widget(block, area);
             let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
             let chunks = Layout::default().direction(Direction::Vertical)
-                .constraints([Constraint::Length(2), Constraint::Length(2), Constraint::Min(1)])
+                .constraints([Constraint::Length(2), Constraint::Length(2), Constraint::Length(1), Constraint::Min(1)])
                 .split(inner);
             f.render_widget(field_para("New instance name:", &as_input.buf, *focus == 0), chunks[0]);
             // Resolve "N min ago" to a wall-clock UTC stamp users can sanity-check.
@@ -47,6 +47,17 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                     *focus == 1,
                 ),
                 chunks[1],
+            );
+            // PITR window info — capped value is in handle_modal_key, so
+            // the picker stops at this earliest; we just show it so the
+            // user knows why the value won't go higher.
+            let pitr_line = match pitr_earliest.as_ref() {
+                Some(e) => format!("PITR earliest: {e}  (picker capped here)"),
+                None    => "PITR earliest: (no full backup yet — `pgforge snapshot` first)".to_string(),
+            };
+            f.render_widget(
+                Paragraph::new(Line::styled(pitr_line, Style::default().fg(Color::DarkGray))),
+                chunks[2],
             );
             f.render_widget(
                 Paragraph::new(vec![
@@ -67,7 +78,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
                     ]),
                 ]),
-                chunks[2],
+                chunks[3],
             );
             // Caret only on the text field; minutes-ago picker is a number cycler.
             if *focus == 0 {

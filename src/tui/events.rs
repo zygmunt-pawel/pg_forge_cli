@@ -139,7 +139,19 @@ pub enum PendingDestructiveOp {
 pub enum Modal {
     CloneAs { source: String, input: TextField },
     UpgradeTo { source: String, input: TextField },
-    RestoreAs { source: String, as_input: TextField, minutes_ago: u32, focus: u8 },
+    RestoreAs {
+        source: String,
+        as_input: TextField,
+        minutes_ago: u32,
+        focus: u8,
+        /// Captured at modal-open from snapshots[source].pitr.earliest.
+        /// Used to cap minutes_ago so the user can't pick a target_time
+        /// before the earliest full backup (pgbackrest would either
+        /// fall back to the earliest full silently, or fail outright —
+        /// neither is what the user expected). None when the instance
+        /// has no full backups yet, in which case we don't cap.
+        pitr_earliest: Option<String>,
+    },
     Confirm { kind: PendingDestructiveOp, prompt: String },
     Snapshots { name: String, view: SnapshotsView },
     ErrorDetail { msg: String },
