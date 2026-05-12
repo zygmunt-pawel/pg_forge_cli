@@ -10,7 +10,34 @@ ratatui TUI dashboard. 150 unit tests green.
 
 ## Install
 
-**macOS (universal binary, works on Apple Silicon + Intel):**
+Two things on the target Mac: the `pgforge` binary and a Docker engine.
+
+### 1. OrbStack (Docker engine)
+
+[OrbStack](https://orbstack.dev) is recommended — significantly faster and
+lighter than Docker Desktop on macOS, free for personal use.
+
+```bash
+# via Homebrew
+brew install --cask orbstack
+
+# launch it (first run prompts for a one-time privileged helper install)
+open -a OrbStack
+```
+
+Verify it's up:
+```bash
+docker ps
+# CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS   PORTS   NAMES
+```
+
+OrbStack starts automatically on subsequent logins. Alternatively, if you
+already have Docker Desktop running, that works too — pgforge talks to
+whatever Docker socket is exposed.
+
+### 2. pgforge binary
+
+Universal macOS binary (works on Apple Silicon + Intel):
 ```bash
 curl -L https://github.com/zygmunt-pawel/pg_forge_cli/releases/latest/download/pgforge \
   -o /usr/local/bin/pgforge
@@ -18,10 +45,6 @@ chmod +x /usr/local/bin/pgforge
 xattr -d com.apple.quarantine /usr/local/bin/pgforge 2>/dev/null || true
 pgforge --version
 ```
-
-That's all you need on the target machine besides a Docker engine — install
-[OrbStack](https://orbstack.dev) (recommended, faster than Docker Desktop on
-macOS) and you're set.
 
 ## Building from source
 
