@@ -423,6 +423,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Some(Command::Cron { name, hour, off }) => {
+            if let Some(h) = hour {
+                crate::domain::instance::Instance::validate_snapshot_hour(h)?;
+            }
             let root = crate::state::instance::InstanceState::default_state_root();
             let mut state = crate::state::instance::InstanceState::load_under(&root, &name)?;
             state.instance.snapshot_hour = if off { None } else { hour };
@@ -442,6 +445,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             snapshot_hour,
             no_snapshot_hour,
         }) => {
+            if !no_snapshot_hour {
+                crate::domain::instance::Instance::validate_snapshot_hour(snapshot_hour)?;
+            }
             let state = run_create(CreateArgs {
                 name,
                 preset,

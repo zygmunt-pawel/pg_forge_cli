@@ -71,6 +71,18 @@ impl Instance {
             .unwrap_or_else(|| format!("pgforge_data_{}", self.name))
     }
 
+    /// Snapshot hour must be in 0..=23 (a valid hour of the day).
+    /// A value like 24 or 99 causes `is_snapshot_due` to never fire,
+    /// silently killing the scheduler for that instance.
+    pub fn validate_snapshot_hour(h: u8) -> Result<()> {
+        if h > 23 {
+            return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+                "snapshot_hour must be 0..=23, got {h}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Names must be filesystem-safe, DNS-safe, and short enough to fit a
     /// container name. Conservative regex: lowercase start, then
     /// alphanumeric / `_` / `-`, total length 1..=63.
