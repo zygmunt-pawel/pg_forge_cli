@@ -71,6 +71,11 @@ pub async fn run_with_engine<E: DockerEngine>(
                 instance.name
             )));
         } else {
+            // pgbackrest stanza-delete refuses to run unless a stop file
+            // exists for the stanza (safety: makes sure no concurrent
+            // archive-push / backup races the deletion). `pgbackrest stop`
+            // creates that file and waits for in-flight commands; then
+            // stanza-delete --force wipes the S3 prefix.
             let out = docker
                 .exec(
                     &container_name,
@@ -79,14 +84,16 @@ pub async fn run_with_engine<E: DockerEngine>(
                         "-",
                         "postgres",
                         "-c",
-                        "pgbackrest --stanza=main --force stanza-delete",
+                        "pgbackrest --stanza=main stop && \
+                         pgbackrest --stanza=main --force stanza-delete",
                     ],
                 )
                 .await?;
             if out.exit_code != 0 {
                 return Err(PgForgeError::Anyhow(anyhow::anyhow!(
-                    "pgbackrest stanza-delete failed (exit {}): {}",
+                    "pgbackrest stanza-delete failed (exit {}): stdout={} stderr={}",
                     out.exit_code,
+                    out.stdout,
                     out.stderr
                 )));
             }
