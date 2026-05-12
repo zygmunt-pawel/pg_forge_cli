@@ -336,22 +336,11 @@ impl AppState {
     }
 }
 
-/// Validator reused by clone+restore. Matches the regex used by
-/// `domain::instance::Instance::validate_name`.
+/// Validator reused by clone+restore. Delegates to
+/// `domain::instance::Instance::validate_name` (single source of truth).
 fn validate_instance_name(s: &str) -> std::result::Result<(), String> {
-    if s.is_empty() { return Err("name cannot be empty".into()); }
-    if s.len() > 63 { return Err("name too long (max 63 chars)".into()); }
-    let mut chars = s.chars();
-    let first = chars.next().unwrap();
-    if !first.is_ascii_lowercase() {
-        return Err(format!("name must start with a-z, got {:?}", first));
-    }
-    for c in chars {
-        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-            return Err(format!("invalid character {:?}: allowed [a-z0-9_-]", c));
-        }
-    }
-    Ok(())
+    use crate::domain::instance::Instance;
+    Instance::validate_name(s).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
