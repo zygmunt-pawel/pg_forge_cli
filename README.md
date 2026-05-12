@@ -17,29 +17,63 @@ Two things on the target Mac: the `pgforge` binary and a Docker engine.
 [OrbStack](https://orbstack.dev) is recommended — significantly faster and
 lighter than Docker Desktop on macOS, free for personal use.
 
+**Step 1 — Install** (terminal, can be done over SSH):
 ```bash
-# via Homebrew
 brew install --cask orbstack
-
-# launch it (first run prompts for a one-time privileged helper install)
-open -a OrbStack
 ```
 
-Verify it's up:
+**Step 2 — First launch (requires the desktop GUI, NOT SSH-only).**
+OrbStack's first run installs a privileged helper, accepts a Gatekeeper
+prompt, and on Apple Silicon also installs Rosetta. All three need an
+active GUI session — you can't bootstrap it over SSH. Sit at the Mac (or
+use Screen Sharing) and run:
+
+```bash
+open /Applications/OrbStack.app
+```
+
+or just double-click OrbStack in `/Applications`. Then:
+
+1. Click **Open** on the Gatekeeper dialog ("OrbStack is from Orbital
+   Labs, Inc.").
+2. Enter your password when prompted for the privileged helper install.
+3. On Apple Silicon, accept the Rosetta install dialog (one-time).
+4. Walk through the brief onboarding — Docker integration is on by
+   default, leave it. Skip Kubernetes if you don't need it.
+
+After onboarding, OrbStack lives in the menu bar and adds `docker` /
+`docker-compose` / `orb` to your PATH. **Open a new terminal** (the old
+one has stale PATH) and verify:
+
 ```bash
 docker ps
 # CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS   PORTS   NAMES
 ```
 
-Make it start automatically on every login so your pgforge instances come
-back up after a reboot:
+**Step 3 — Autostart on login** so your pgforge instances come back up
+after a reboot:
 ```bash
 osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/OrbStack.app", hidden:true}'
 ```
-(GUI equivalent: OrbStack → Settings → System → toggle **Open at login**.)
+(GUI equivalent: OrbStack menu bar → Settings → System → toggle **Open
+at login**.)
 
 If you already have Docker Desktop running instead, that works too —
 pgforge talks to whatever Docker socket is exposed via `DOCKER_HOST`.
+
+#### Troubleshooting
+
+- **`open -a OrbStack` says "Unable to find application"** — Homebrew
+  installed the app bundle but LaunchServices hasn't reindexed yet. Use
+  the full path `open /Applications/OrbStack.app` instead.
+- **`open` over SSH returns "Domain does not support specified action"**
+  — you cannot start a macOS GUI app from an SSH session without an
+  active user login. Sit at the Mac for the first launch; subsequent
+  starts are fine over SSH because OrbStack is then registered as a
+  login item.
+- **`docker: command not found` after launching OrbStack** — your shell
+  still has the pre-install PATH. Open a new terminal window, or
+  `source ~/.zprofile`. OrbStack appends its CLI dir during onboarding.
 
 ### 2. pgforge binary
 
