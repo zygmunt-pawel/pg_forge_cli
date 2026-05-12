@@ -36,6 +36,14 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                     .style(Style::default().fg(Color::DarkGray)),
                 chunks[2],
             );
+            // Place caret on the focused field. See Modal::Create arm for the same idiom.
+            let (field, idx) = if *focus == 0 { (as_input, 0usize) } else { (target_time, 1usize) };
+            let chunk = chunks[idx];
+            let visual_col = field.buf[..field.cursor].chars().count() as u16;
+            f.set_cursor_position(ratatui::layout::Position {
+                x: chunk.x + 2 + visual_col,
+                y: chunk.y + 1,
+            });
         }
         Modal::Confirm { prompt, .. } => {
             let block = Block::default().title(" Confirm ").borders(Borders::ALL);
@@ -117,6 +125,28 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 ]),
                 chunks[5],
             );
+            // Place the terminal's blinking caret at the active text
+            // field. ratatui hides the cursor in the alternate screen
+            // by default; calling set_cursor_position re-shows it and
+            // places it where the next typed char would land.
+            // Layout: field_para is 2 lines: label on chunk.y, input
+            // on chunk.y+1. The "▌ " marker is 2 columns wide; the
+            // visual cursor offset is `chars().count()` of buf up to
+            // the byte-cursor (correct for ASCII; close enough for
+            // multi-byte names which aren't expected here).
+            if let Some(field) = match *focus {
+                0 => Some(&*name),
+                1 => Some(&*app_user),
+                2 => Some(&*pg_version),
+                _ => None,
+            } {
+                let chunk = chunks[*focus as usize];
+                let visual_col = field.buf[..field.cursor].chars().count() as u16;
+                f.set_cursor_position(ratatui::layout::Position {
+                    x: chunk.x + 2 + visual_col,
+                    y: chunk.y + 1,
+                });
+            }
         }
         Modal::CreatedSuccess { name, uri } => {
             let block = Block::default()
@@ -165,7 +195,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     }
 }
 
-fn single_input(f: &mut Frame, area: Rect, title: &str, buf: &str, _cursor: usize) {
+fn single_input(f: &mut Frame, area: Rect, title: &str, buf: &str, cursor: usize) {
     let block = Block::default().title(format!(" {title} ")).borders(Borders::ALL);
     f.render_widget(block, area);
     let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
@@ -180,6 +210,12 @@ fn single_input(f: &mut Frame, area: Rect, title: &str, buf: &str, _cursor: usiz
         Paragraph::new("[Enter] continue   [Esc] cancel").style(Style::default().fg(Color::DarkGray)),
         chunks[2],
     );
+    // Blinking caret on the input line.
+    let visual_col = buf[..cursor].chars().count() as u16;
+    f.set_cursor_position(ratatui::layout::Position {
+        x: chunks[0].x + 2 + visual_col,
+        y: chunks[0].y,
+    });
 }
 
 fn field_para(label: &str, buf: &str, focused: bool) -> Paragraph<'static> {
