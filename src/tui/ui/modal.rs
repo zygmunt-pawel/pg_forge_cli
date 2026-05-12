@@ -98,7 +98,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             f.render_widget(
                 cycle_para(
                     "Preset (← →):",
-                    &format!("{:?}", preset).to_lowercase(),
+                    &preset_label(*preset),
                     *focus == 3,
                 ),
                 chunks[3],
@@ -240,6 +240,20 @@ fn field_para(label: &str, buf: &str, focused: bool) -> Paragraph<'static> {
             Span::raw(buf.to_string()),
         ]),
     ])
+}
+
+/// One-line summary of a Preset's tuning parameters, shown inline in the
+/// Create wizard so the user sees what they're picking at a glance:
+/// "small — 2GB RAM · 100 conn · 512MB shared_buffers"
+fn preset_label(p: crate::domain::preset::Preset) -> String {
+    let name = format!("{:?}", p).to_lowercase();
+    let t = p.tuning();
+    format!(
+        "{name} — {}GB RAM · {} conn · {}MB shared_buffers",
+        t.ram_mb / 1024,
+        t.max_connections,
+        t.shared_buffers_mb,
+    )
 }
 
 fn cycle_para(label: &str, value: &str, focused: bool) -> Paragraph<'static> {
