@@ -462,47 +462,57 @@ impl AppState {
                 name, app_user, pg_version, preset, no_backup, focus,
                 generated_password, generated_pgbackrest_password,
             }) => {
-                // Validate name
-                if let Err(msg) = validate_instance_name(&name.buf) {
-                    self.last_op_error = Some(OpError {
-                        instance: name.buf.clone(), kind: OpKind::Snapshot, // closest fit; no Create-kind in OpError
-                        msg, at: Instant::now(),
+                // Helper to set the error + put the modal back unchanged.
+                let fail = |state: &mut AppState, msg: String,
+                            name, app_user, pg_version, preset, no_backup, focus,
+                            generated_password, generated_pgbackrest_password| {
+                    state.last_op_error = Some(OpError {
+                        instance: "create wizard".into(),
+                        kind: OpKind::Create,
+                        msg,
+                        at: Instant::now(),
                     });
-                    self.modal = Some(Modal::Create {
+                    state.modal = Some(Modal::Create {
                         name, app_user, pg_version, preset, no_backup, focus,
                         generated_password, generated_pgbackrest_password,
                     });
+                };
+
+                // Validate instance name
+                if let Err(msg) = validate_instance_name(&name.buf) {
+                    fail(self, format!("instance name: {msg}"),
+                         name, app_user, pg_version, preset, no_backup, focus,
+                         generated_password, generated_pgbackrest_password);
                     return;
                 }
                 // Validate version
                 let ver = match pg_version.buf.parse::<u8>() {
                     Ok(v) if v > 0 => v,
                     _ => {
-                        self.last_op_error = Some(OpError {
-                            instance: name.buf.clone(), kind: OpKind::Snapshot,
-                            msg: format!("invalid pg version: {:?}", pg_version.buf),
-                            at: Instant::now(),
-                        });
-                        self.modal = Some(Modal::Create {
-                            name, app_user, pg_version, preset, no_backup, focus,
-                            generated_password, generated_pgbackrest_password,
-                        });
+                        fail(self, format!("invalid pg version {:?} — expected 13..=18", pg_version.buf),
+                             name, app_user, pg_version, preset, no_backup, focus,
+                             generated_password, generated_pgbackrest_password);
                         return;
                     }
                 };
-                // Validate app_user (relaxed: just non-empty, allow letters+digits+_).
-                if app_user.buf.is_empty()
-                    || !app_user.buf.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                // Validate app_user — distinguish empty from bad-char, and quote
+                // the offending character so the user can find it (a trailing
+                // space or a "-" instead of "_" is the typical mistake).
+                if app_user.buf.is_empty() {
+                    fail(self, "App user cannot be empty.".into(),
+                         name, app_user, pg_version, preset, no_backup, focus,
+                         generated_password, generated_pgbackrest_password);
+                    return;
+                }
+                if let Some(bad) = app_user.buf.chars()
+                    .find(|c| !(c.is_ascii_alphanumeric() || *c == '_'))
                 {
-                    self.last_op_error = Some(OpError {
-                        instance: name.buf.clone(), kind: OpKind::Snapshot,
-                        msg: "app_user must be non-empty [a-zA-Z0-9_]".into(),
-                        at: Instant::now(),
-                    });
-                    self.modal = Some(Modal::Create {
-                        name, app_user, pg_version, preset, no_backup, focus,
-                        generated_password, generated_pgbackrest_password,
-                    });
+                    let printable = if bad == ' ' { "space".to_string() } else { format!("{:?}", bad) };
+                    fail(self, format!(
+                        "App user {:?} has invalid char {} — only letters, digits and `_` are allowed (no `-`, no spaces).",
+                        app_user.buf, printable,
+                    ), name, app_user, pg_version, preset, no_backup, focus,
+                       generated_password, generated_pgbackrest_password);
                     return;
                 }
                 self.pending_creates.push(CreateRequest {
