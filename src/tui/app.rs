@@ -379,9 +379,23 @@ impl AppState {
                 KeyCode::Enter => Action::Submit,
                 _ => Action::Nothing,
             },
-            Some(Modal::Confirm { .. }) => match k.code {
+            Some(Modal::Confirm { kind, prompt }) => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => Action::ConfirmYes,
                 KeyCode::Char('n') => Action::ConfirmNo,
+                // Shift+D upgrades a Destroy confirm to the
+                // wipe-S3-backups variant in-place. Documented in the
+                // initial prompt. Other destructive kinds ignore it.
+                KeyCode::Char('D') => {
+                    if let PendingDestructiveOp::Destroy { name, delete_backups } = kind {
+                        if !*delete_backups {
+                            *delete_backups = true;
+                            *prompt = format!(
+                                "Destroy {name} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
+                            );
+                        }
+                    }
+                    Action::Nothing
+                }
                 _ => Action::Nothing,
             },
             Some(Modal::Create { name, app_user, pg_version, preset, no_backup, focus, .. }) => {
