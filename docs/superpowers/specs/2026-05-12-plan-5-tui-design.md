@@ -25,14 +25,17 @@ Mutating operations available from the TUI:
 - `[u]` upgrade — destructive, opens `Modal::UpgradeTo` then `Modal::Confirm`
 - `[r]` restore — destructive, opens `Modal::RestoreAs` then `Modal::Confirm`
 - `[Enter]` copy connection string to the system clipboard (arboard).
-  Bottom-bar flash on success. **Password handling**: the app password is
-  not stored in `state.toml` (it lives in init_sql which is wiped after
-  bootstrap), so the copied URI is
-  `postgresql://{app_user}:***@127.0.0.1:{host_port}/{db_name}` —
-  consistent with what the CLI already prints. The user replaces `***`
-  with their `PGPASSWORD` / `.pgpass` value. If clipboard write fails
-  (e.g. no display server), open `Modal::ErrorDetail` containing the URI
-  for manual copy and surface the clipboard error in `last_op_error`.
+  Bottom-bar flash on success. **Password handling**: `state.toml` (mode
+  0600) stores `instance.app_password` in plaintext, so the copied URI
+  embeds the real password:
+  `postgresql://{app_user}:{password}@127.0.0.1:{host_port}/{db_name}`.
+  This is intentional: the CLI deliberately prints `***` to avoid leaking
+  to terminal scrollback, but clipboard contents are private to the
+  user. The flash message must **not** echo the password — render
+  `"copied connection string for <name>"` only. If clipboard write fails
+  (e.g. no display server), surface the error via `last_op_error` (red
+  bottom bar) and do **not** open ErrorDetail (which would print the URI
+  with password to the screen).
 - `[q]`/`Esc` quit.
 - `[?]` shows full error detail for `last_op_error` (if set).
 - `[e]` open `Modal::Snapshots` with the full scrollable list.
