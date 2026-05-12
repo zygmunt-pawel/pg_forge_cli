@@ -122,7 +122,14 @@ pub async fn run_with_engine<E: DockerEngine>(
     // pgbackrest.conf: clone gets its OWN repo path for future snapshots.
     // Secret — carries S3 access_key + secret_key.
     crate::util::fs::write_secret(&pgbackrest_conf, generate_pgbackrest_conf(&args.as_name, &s3, 30))?;
-    std::fs::write(&entrypoint, generate_clone_entrypoint(&source_container))
+    // pg_basebackup connects to the source container over the pgforge_net
+    // docker network using the container hostname. All pgforge containers
+    // always listen on port 5432 internally; the host_port is only relevant
+    // for connections from outside Docker.
+    std::fs::write(
+        &entrypoint,
+        generate_clone_entrypoint(&source_container, 5432),
+    )
         .map_err(|e| PgForgeError::Io {
             path: entrypoint.clone(),
             source: e,
