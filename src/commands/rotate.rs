@@ -185,6 +185,7 @@ pub async fn run_with_engine<E: DockerEngine>(
             "-c".into(),
             "hba_file=/etc/postgresql/pg_hba.conf".into(),
         ]),
+        restart_policy: crate::docker::engine::RestartPolicy::UnlessStopped,
     };
     let id = docker.create_container(&spec).await?;
     docker.start_container(&id).await?;

@@ -10,6 +10,18 @@ pub struct BindMount {
     pub read_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RestartPolicy {
+    /// Long-running primary container. Recover from host reboot.
+    #[default]
+    UnlessStopped,
+    /// One-shot container — clone bootstrap, restore bootstrap, pg_upgrade.
+    /// Failure must surface as a non-zero wait_for_container_exit code, not
+    /// trigger Docker to re-run the entrypoint (which would wipe PGDATA on
+    /// the clone/restore path).
+    No,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateContainerSpec {
     pub container_name: String,
@@ -33,6 +45,11 @@ pub struct CreateContainerSpec {
     /// read — without these flags, postgres reads only $PGDATA-internal
     /// initdb defaults and our hardened configs are silently ignored.
     pub cmd_override: Option<Vec<String>>,
+    /// Docker restart policy for this container. Long-lived containers use
+    /// `UnlessStopped`; one-shot containers (clone/restore/upgrade) use `No`
+    /// so a failed entrypoint surfaces as an error rather than restarting
+    /// and potentially wiping PGDATA on every loop.
+    pub restart_policy: RestartPolicy,
 }
 
 #[derive(Debug, Clone)]

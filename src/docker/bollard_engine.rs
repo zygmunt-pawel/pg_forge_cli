@@ -130,8 +130,8 @@ impl DockerEngine for BollardEngine {
 
     async fn create_container(&self, spec: &CreateContainerSpec) -> Result<String> {
         use bollard::models::{
-            ContainerCreateBody, HostConfig, Mount, MountType, PortBinding, RestartPolicy,
-            RestartPolicyNameEnum,
+            ContainerCreateBody, HostConfig, Mount, MountType, PortBinding,
+            RestartPolicy as BollardRestartPolicy, RestartPolicyNameEnum,
         };
         use bollard::query_parameters::CreateContainerOptionsBuilder;
         use std::collections::HashMap;
@@ -188,9 +188,14 @@ impl DockerEngine for BollardEngine {
             memory_swap: Some((spec.memory_mb as i64) * 1024 * 1024),
             shm_size: Some((spec.shm_size_mb as i64) * 1024 * 1024),
             network_mode: Some(spec.network.clone()),
-            restart_policy: Some(RestartPolicy {
-                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
-                ..Default::default()
+            restart_policy: Some(BollardRestartPolicy {
+                name: Some(match spec.restart_policy {
+                    crate::docker::engine::RestartPolicy::UnlessStopped => {
+                        RestartPolicyNameEnum::UNLESS_STOPPED
+                    }
+                    crate::docker::engine::RestartPolicy::No => RestartPolicyNameEnum::NO,
+                }),
+                maximum_retry_count: None,
             }),
             ..Default::default()
         };

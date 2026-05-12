@@ -171,6 +171,7 @@ pub async fn run_with_engine<E: DockerEngine>(
         shm_size_mb: 256,
         entrypoint_override: Some(vec!["/usr/local/bin/pgforge-upgrade.sh".into()]),
         cmd_override: None,
+        restart_policy: crate::docker::engine::RestartPolicy::No,
     };
     let id = docker.create_container(&upgrade_spec).await?;
     docker.start_container(&id).await?;
@@ -343,6 +344,7 @@ async fn recreate_regular_container<E: DockerEngine>(
             "-c".into(),
             "hba_file=/etc/postgresql/pg_hba.conf".into(),
         ]),
+        restart_policy: crate::docker::engine::RestartPolicy::UnlessStopped,
     };
     let id = docker.create_container(&spec).await?;
     docker.start_container(&id).await?;

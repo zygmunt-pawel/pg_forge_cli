@@ -223,6 +223,7 @@ pub async fn run_with_engine<E: DockerEngine>(
             "/usr/local/bin/pgforge-clone-entrypoint.sh".into(),
         ]),
         cmd_override: None,
+        restart_policy: crate::docker::engine::RestartPolicy::No,
     };
     let id = docker.create_container(&spec).await?;
 

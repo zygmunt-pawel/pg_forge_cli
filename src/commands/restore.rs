@@ -209,6 +209,7 @@ pub async fn run_with_engine<E: DockerEngine>(
             "/usr/local/bin/pgforge-restore-entrypoint.sh".into(),
         ]),
         cmd_override: None,
+        restart_policy: crate::docker::engine::RestartPolicy::No,
     };
     let container_name = spec.container_name.clone();
     let volume_name = spec.volumes[0].volume_name.clone();

@@ -233,6 +233,7 @@ pub async fn run_with_engine<E: DockerEngine>(
             "-c".into(),
             "hba_file=/etc/postgresql/pg_hba.conf".into(),
         ]),
+        restart_policy: crate::docker::engine::RestartPolicy::UnlessStopped,
     };
     let container_name = spec.container_name.clone();
     let volume_name = spec.volumes[0].volume_name.clone();
