@@ -49,28 +49,46 @@ Only needed if you're developing on pgforge itself.
    access_key = "AKIA…"
    secret_key = "…"
    ```
-3. Spawn an instance:
+3. Spawn an instance. You pick two passwords here — they don't exist anywhere
+   yet; pgforge creates the postgres roles with whatever you supply, and the
+   same strings are then what you use to connect:
+
+   - `PGFORGE_APP_PASSWORD` — password for the **application user** (default
+     name `leads`). This is your "database password" — what `psql`, your app,
+     ORMs, etc. use to connect.
+   - `PGFORGE_PGBACKREST_PASSWORD` — password for the internal `pgbackrest`
+     replication role (used for backups and `pgforge clone`). Not used by
+     your application code. Skip this one if you're using `--no-backup`.
+
    ```bash
-   PGFORGE_APP_PASSWORD=changeme \
-   PGFORGE_PGBACKREST_PASSWORD=changeme2 \
+   PGFORGE_APP_PASSWORD=$(openssl rand -base64 24) \
+   PGFORGE_PGBACKREST_PASSWORD=$(openssl rand -base64 24) \
    pgforge create \
        --name billing \
        --preset tiny \
        --version 18
    ```
-   For local dev / testing without S3, pass `--no-backup`:
+
+   For local dev / testing without S3, pass `--no-backup` — no pgbackrest
+   role is created so the second password isn't needed:
    ```bash
-   PGFORGE_APP_PASSWORD=pw pgforge create \
+   PGFORGE_APP_PASSWORD=changeme pgforge create \
        --name dev --preset tiny --version 18 --no-backup
    ```
    No-backup instances run hardened postgres but don't push WAL anywhere
    and refuse `snapshot` / `clone` / `restore`.
 
-4. Connect:
+   Both passwords are saved in plaintext to
+   `~/Library/Application Support/dev.pgforge.pgforge/instances/<name>/state.toml`
+   (mode 0600). The TUI's `[Enter]` shortcut reads them from there to
+   build a ready-to-paste connection URI.
+
+4. Connect, substituting the password you set above:
    ```bash
-   psql "postgresql://leads:changeme@127.0.0.1:<port>/billing"
+   psql "postgresql://leads:<your-app-password>@127.0.0.1:<port>/billing"
    ```
-   (The port is printed at the end of `create` and saved in `~/.local/share/pgforge/instances/billing/state.toml`.)
+   (The port is printed at the end of `create` and saved alongside the
+   passwords in `state.toml`. The TUI shows it next to each instance.)
 
 ## TUI mode
 
