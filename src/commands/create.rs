@@ -286,20 +286,54 @@ async fn bootstrap_create<E: DockerEngine>(
     // pgbackrest stanza-create is the gate that turns archive_command from
     // a doomed retry-storm into a working WAL pipeline. Skip it when there
     // is no pgbackrest at all (--no-backup).
+    //
+    // Race: once postgres is `pg_isready`, the first checkpoint switches a
+    // WAL segment and fires archive_command (pgbackrest archive-push),
+    // which grabs /tmp/pgbackrest/main-archive-1.lock. If our stanza-create
+    // races into the same lock we get exit 50. We retry a few times — the
+    // archive-push holds the lock for <1 s so a short sleep gets us in.
     if !args.no_backup {
-        let stanza = docker
-            .exec(
-                id,
-                &[
-                    "su", "-", "postgres", "-c",
-                    "pgbackrest --stanza=main stanza-create",
-                ],
-            )
-            .await?;
-        if stanza.exit_code != 0 {
+        let mut last_err: Option<String> = None;
+        let mut last_exit: i64 = 0;
+        let mut last_out = (String::new(), String::new());
+        for attempt in 0..5u8 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            }
+            let stanza = docker
+                .exec(
+                    id,
+                    &[
+                        "su", "-", "postgres", "-c",
+                        "pgbackrest --stanza=main stanza-create",
+                    ],
+                )
+                .await?;
+            if stanza.exit_code == 0 {
+                last_err = None;
+                break;
+            }
+            last_exit = stanza.exit_code;
+            last_out = (stanza.stdout.clone(), stanza.stderr.clone());
+            // Only retry the lock-contention path; other errors (bad
+            // credentials, bucket missing) won't get better on retry.
+            let lock_busy = stanza.stdout.contains("unable to acquire lock")
+                || stanza.stderr.contains("unable to acquire lock");
+            if !lock_busy {
+                last_err = Some("non-lock error".into());
+                break;
+            }
+            last_err = Some("lock busy".into());
+            tracing::warn!(
+                target: "pgforge::create",
+                "stanza-create attempt {} hit archive-push lock; retrying",
+                attempt + 1
+            );
+        }
+        if last_err.is_some() {
             return Err(PgForgeError::Docker(format!(
                 "pgbackrest stanza-create failed (exit {}): stdout={:?} stderr={:?}",
-                stanza.exit_code, stanza.stdout, stanza.stderr
+                last_exit, last_out.0, last_out.1
             )));
         }
     }

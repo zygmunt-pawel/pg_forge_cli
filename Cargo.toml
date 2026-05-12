@@ -1,6 +1,6 @@
 [package]
 name = "pgforge"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2024"
 description = "RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host"
 license = "MIT OR Apache-2.0"
