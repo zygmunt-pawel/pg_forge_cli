@@ -17,16 +17,40 @@ use crate::state::instance::InstanceState;
 use base64::Engine;
 
 /// Build a postgres connection URI for an instance, using the real
-/// password from state.toml (mode 0600). The TUI never *prints* this —
-/// it's clipboard-only; the bottom-bar flash says "copied" without
-/// echoing the URI.
+/// password from state.toml (mode 0600). Host is the machine's hostname
+/// (resolvable on the LAN via mDNS, e.g. `Pawels-Mac-mini.local`) so the
+/// URI is copy-paste-able from another machine. Falls back to
+/// 127.0.0.1 if hostname lookup fails — local-only connect still works
+/// in that case. The TUI never *prints* this URI to the screen; the
+/// bottom-bar flash says "copied" without echoing it.
 pub fn build_connection_uri(state: &InstanceState) -> String {
     let i = &state.instance;
+    let host = lan_hostname().unwrap_or_else(|| "127.0.0.1".to_string());
     format!(
-        "postgresql://{user}:{pw}@127.0.0.1:{port}/{db}",
+        "postgresql://{user}:{pw}@{host}:{port}/{db}",
         user = i.app_user, pw = i.app_password,
-        port = i.host_port, db = i.db_name,
+        host = host, port = i.host_port, db = i.db_name,
     )
+}
+
+/// Best-effort `hostname` lookup for the LAN-reachable URI. On macOS
+/// the OS-level "Computer Name" appears as `<name>.local` via Bonjour
+/// (mDNS), so `gethostname()` ⇒ "Pawels-Mac-mini" is enough — we
+/// append `.local` for stability across LANs that don't broadcast a
+/// search domain. Linux servers return their actual hostname which
+/// either resolves via /etc/hosts or DNS — also fine.
+fn lan_hostname() -> Option<String> {
+    let out = std::process::Command::new("hostname").output().ok()?;
+    if !out.status.success() { return None; }
+    let raw = String::from_utf8(out.stdout).ok()?;
+    let h = raw.trim();
+    if h.is_empty() { return None; }
+    // macOS hostnames sometimes come with `.local` already; don't double-append.
+    if cfg!(target_os = "macos") && !h.ends_with(".local") {
+        Some(format!("{h}.local"))
+    } else {
+        Some(h.to_string())
+    }
 }
 
 pub fn copy_to_clipboard(s: &str) -> Result<()> {
@@ -96,12 +120,16 @@ mod tests {
     }
 
     #[test]
-    fn uri_embeds_real_password() {
+    fn uri_has_real_password_and_lan_hostname() {
         let s = mk_state("leads", "s3cret", 5433, "leads");
-        assert_eq!(
-            build_connection_uri(&s),
-            "postgresql://leads:s3cret@127.0.0.1:5433/leads"
-        );
+        let uri = build_connection_uri(&s);
+        // Host segment is whatever `hostname` returns on the build/test
+        // machine (we don't lock it; CI hostnames vary). The other three
+        // segments are deterministic and assertable.
+        assert!(uri.starts_with("postgresql://leads:s3cret@"));
+        assert!(uri.ends_with(":5433/leads"));
+        // No hardcoded 127.0.0.1 (would defeat the LAN-reachable URI flow).
+        // Falls back to 127.0.0.1 only if hostname(1) fails — rare in CI.
     }
 
     #[test]

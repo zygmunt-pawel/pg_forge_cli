@@ -136,12 +136,16 @@ impl DockerEngine for BollardEngine {
         use bollard::query_parameters::CreateContainerOptionsBuilder;
         use std::collections::HashMap;
 
-        // Port bindings: container_port/tcp -> host 127.0.0.1:host_port
+        // Port bindings: container_port/tcp -> host 0.0.0.0:host_port.
+        // 0.0.0.0 exposes the port on every host interface (lo + LAN),
+        // so the instance is reachable from other machines on the same
+        // network. Postgres itself is still protected by scram-sha-256
+        // and pg_hba rules; the bind just opens the docker-level NAT.
         let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
         port_bindings.insert(
             format!("{}/tcp", spec.container_port),
             Some(vec![PortBinding {
-                host_ip: Some("127.0.0.1".to_string()),
+                host_ip: Some("0.0.0.0".to_string()),
                 host_port: Some(spec.host_port.to_string()),
             }]),
         );
