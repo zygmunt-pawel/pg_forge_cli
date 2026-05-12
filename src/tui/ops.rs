@@ -175,6 +175,7 @@ async fn run_create(req: crate::tui::events::CreateRequest, state_root: Option<P
         override_state_root: state_root,
         no_backup: req.no_backup,
         retain_days: req.retain_days,
+        snapshot_hour: req.snapshot_hour,
     })
     .await?;
     Ok(())

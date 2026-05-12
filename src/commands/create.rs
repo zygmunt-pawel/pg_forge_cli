@@ -35,6 +35,9 @@ pub struct CreateArgs {
     /// pgbackrest retention in days (passed through to Instance.retain_days
     /// and pgbackrest.conf). Default 30. 0 = keep all fulls forever.
     pub retain_days: u32,
+    /// Auto-snapshot hour (0..=23 local time), or None for manual only.
+    /// Default Some(3) = 03:00 local.
+    pub snapshot_hour: Option<u8>,
 }
 
 pub struct ConfigLayout {
@@ -354,6 +357,8 @@ async fn bootstrap_create<E: DockerEngine>(
             backup_enabled: !args.no_backup,
             volume_name_override: None,
             retain_days: args.retain_days,
+            snapshot_hour: args.snapshot_hour,
+            last_snapshot_at: None,
         },
         created_at: crate::time::now_iso(),
     })
@@ -463,6 +468,7 @@ mod tests {
                 pgbackrest_password: "rpw".into(),
                 override_state_root: Some(tmp.path().to_path_buf()),
                 no_backup: false,
+                snapshot_hour: None,
                 retain_days: 30,
             },
             &engine,

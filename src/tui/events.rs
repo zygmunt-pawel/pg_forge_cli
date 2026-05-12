@@ -125,6 +125,7 @@ pub struct CreateRequest {
     pub preset: crate::domain::preset::Preset,
     pub no_backup: bool,
     pub retain_days: u32,
+    pub snapshot_hour: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,7 +170,10 @@ pub enum Modal {
         /// Retention window in days for pgbackrest full backups.
         /// 0 = keep forever. Default 30. Numeric cycler on focus==5.
         retain_days: u32,
-        /// 0=name, 1=app_user, 2=pg_version, 3=preset, 4=no_backup, 5=retain_days
+        /// Auto-snapshot hour (0..=23 local time). None = manual only.
+        /// Default Some(3) = 03:00. Numeric cycler on focus==6.
+        snapshot_hour: Option<u8>,
+        /// 0=name, 1=app_user, 2=pg_version, 3=preset, 4=no_backup, 5=retain_days, 6=snapshot_hour
         focus: u8,
         /// Pre-generated password, stashed here so submit can pick it
         /// up without re-generating. Not displayed in the modal body

@@ -39,6 +39,7 @@ async fn create_nobackup_tiny_instance() {
             override_state_root: Some(tmp.path().to_path_buf()),
             no_backup: true,
         retain_days: 30,
+        snapshot_hour: None,
         },
         &docker,
         tmp.path().to_path_buf(),

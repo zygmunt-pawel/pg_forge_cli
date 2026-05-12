@@ -6,6 +6,7 @@ pub mod reconfigure;
 pub mod resize;
 pub mod restore;
 pub mod rotate;
+pub mod schedule;
 pub mod self_update;
 pub mod snapshot;
 pub mod snapshots;

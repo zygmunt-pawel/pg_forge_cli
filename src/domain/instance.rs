@@ -37,6 +37,17 @@ pub struct Instance {
     /// Default 30 days = roughly RDS Standard retention.
     #[serde(default = "retain_days_default")]
     pub retain_days: u32,
+    /// Hour of day (0..=23, LOCAL time) at which `pgforge schedule`
+    /// should auto-snapshot this instance. None = manual only.
+    /// Default Some(3) = 03:00 local (typical low-load window).
+    #[serde(default = "snapshot_hour_default")]
+    pub snapshot_hour: Option<u8>,
+    /// RFC3339 timestamp of the last snapshot (auto or manual). Used by
+    /// `pgforge snapshot --due` to decide whether today's window has
+    /// already been satisfied. None for instances that never had a
+    /// snapshot yet.
+    #[serde(default)]
+    pub last_snapshot_at: Option<String>,
 }
 
 fn backup_enabled_default() -> bool {
@@ -45,6 +56,10 @@ fn backup_enabled_default() -> bool {
 
 fn retain_days_default() -> u32 {
     30
+}
+
+fn snapshot_hour_default() -> Option<u8> {
+    Some(3)
 }
 
 impl Instance {

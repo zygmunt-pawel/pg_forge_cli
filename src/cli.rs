@@ -3,6 +3,16 @@ use crate::domain::preset::Preset;
 use crate::error::Result;
 use clap::{Parser, Subcommand};
 
+#[derive(Subcommand, Debug)]
+pub enum ScheduleAction {
+    /// Install the launchd agent.
+    Install,
+    /// Remove the launchd agent.
+    Uninstall,
+    /// Show whether the agent plist exists + is currently loaded.
+    Status,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "pgforge", version, about = "Hardened single-host PostgreSQL provisioner")]
 pub struct Cli {
@@ -14,12 +24,18 @@ pub struct Cli {
 pub enum Command {
     /// Take a full backup of a running instance.
     Snapshot {
-        /// Instance name.
-        #[arg(long)]
-        name: String,
+        /// Instance name. Either this OR --due must be given.
+        #[arg(long, required_unless_present = "due")]
+        name: Option<String>,
         /// Optional user-friendly label (stored alongside pgbackrest's label).
         #[arg(long)]
         label: Option<String>,
+        /// Iterate every backup-enabled instance and snapshot the ones
+        /// whose configured `snapshot_hour` has passed today and which
+        /// haven't been snapshotted today yet. Intended for the LaunchAgent
+        /// installed by `pgforge schedule install`.
+        #[arg(long, conflicts_with_all = ["name", "label"])]
+        due: bool,
     },
     /// List snapshots for an instance.
     Snapshots {
@@ -72,6 +88,26 @@ pub enum Command {
         name: String,
         #[arg(long = "to")]
         to_version: u8,
+    },
+    /// Manage the macOS LaunchAgent that runs `pgforge snapshot --due`
+    /// every 5 minutes. Each instance opts in via its own
+    /// `snapshot_hour` (set at Create time or with `pgforge cron`).
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
+    /// Change an instance's auto-snapshot hour (LOCAL time, 0..=23) or
+    /// disable it. `--hour 3` = daily at 03:00; `--off` = manual only.
+    Cron {
+        #[arg(long)]
+        name: String,
+        /// Hour of day to take the daily auto-snapshot. Mutually
+        /// exclusive with --off.
+        #[arg(long, conflicts_with = "off")]
+        hour: Option<u8>,
+        /// Disable auto-snapshot for this instance.
+        #[arg(long, conflicts_with = "hour")]
+        off: bool,
     },
     /// Change an instance's preset (tuning) — adjusts RAM limit,
     /// max_connections, shared_buffers etc. Rebuilds postgresql.conf
@@ -144,6 +180,14 @@ pub enum Command {
         /// Default 30 ≈ RDS Standard retention.
         #[arg(long, default_value_t = 30)]
         retain_days: u32,
+        /// Auto-snapshot hour (0..=23, local time). Requires `pgforge
+        /// schedule install` to actually fire. Pass --no-snapshot-hour
+        /// for manual-only.
+        #[arg(long, default_value_t = 3)]
+        snapshot_hour: u8,
+        /// Disable auto-snapshot for this instance (manual only).
+        #[arg(long, conflicts_with = "snapshot_hour")]
+        no_snapshot_hour: bool,
     },
 }
 
@@ -162,9 +206,14 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             }
             crate::tui::run().await
         }
-        Some(Command::Snapshot { name, label }) => {
+        Some(Command::Snapshot { name, label, due }) => {
+            if due {
+                let n = crate::commands::snapshot::run_due(None).await?;
+                println!("snapshot --due: {n} instance(s) snapshotted.");
+                return Ok(());
+            }
             let rec = crate::commands::snapshot::run(crate::commands::snapshot::SnapshotArgs {
-                instance: name,
+                instance: name.expect("clap guard: --name required without --due"),
                 user_label: label,
                 override_state_root: None,
             })
@@ -351,6 +400,36 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             println!("Destroyed {name}.");
             Ok(())
         }
+        Some(Command::Schedule { action }) => {
+            match action {
+                ScheduleAction::Install => {
+                    let path = crate::commands::schedule::install()?;
+                    println!("Installed LaunchAgent at {}.", path.display());
+                    println!("Each instance fires according to its `snapshot_hour` field — `pgforge cron --name X --hour N` to change.");
+                    Ok(())
+                }
+                ScheduleAction::Uninstall => {
+                    crate::commands::schedule::uninstall()?;
+                    println!("Uninstalled.");
+                    Ok(())
+                }
+                ScheduleAction::Status => {
+                    let s = crate::commands::schedule::status()?;
+                    println!("plist:  {}", s.plist_path.display());
+                    println!("on disk: {}", s.plist_present);
+                    println!("loaded:  {}", s.loaded);
+                    Ok(())
+                }
+            }
+        }
+        Some(Command::Cron { name, hour, off }) => {
+            let root = crate::state::instance::InstanceState::default_state_root();
+            let mut state = crate::state::instance::InstanceState::load_under(&root, &name)?;
+            state.instance.snapshot_hour = if off { None } else { hour };
+            state.save_under(&root)?;
+            println!("Updated {name}: snapshot_hour = {:?}", state.instance.snapshot_hour);
+            Ok(())
+        }
         Some(Command::Create {
             name,
             preset,
@@ -360,6 +439,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             pgbackrest_password,
             no_backup,
             retain_days,
+            snapshot_hour,
+            no_snapshot_hour,
         }) => {
             let state = run_create(CreateArgs {
                 name,
@@ -371,6 +452,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 override_state_root: None,
                 no_backup,
                 retain_days,
+                snapshot_hour: if no_snapshot_hour { None } else { Some(snapshot_hour) },
             })
             .await?;
             let i = &state.instance;

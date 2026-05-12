@@ -310,6 +310,8 @@ async fn bootstrap_clone<E: DockerEngine>(
             backup_enabled: true,
             volume_name_override: None,
             retain_days: source.instance.retain_days,
+            snapshot_hour: source.instance.snapshot_hour,
+            last_snapshot_at: None,
         },
         created_at: crate::time::now_iso(),
     })

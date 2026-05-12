@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::Confirm { .. } => (60, 7),
         Modal::ErrorDetail { .. } => (80, 15),
         Modal::Snapshots { .. } => (80, 20),
-        Modal::Create { .. } => (72, 20),
+        Modal::Create { .. } => (72, 23),
         Modal::CreatedSuccess { .. } => (90, 11),
         Modal::ConnectionString { .. } => (90, 9),
         Modal::ResizeTo { .. } => (66, 11),
@@ -122,7 +122,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             }
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
         }
-        Modal::Create { name, app_user, pg_version, preset, no_backup, retain_days, focus, .. } => {
+        Modal::Create { name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus, .. } => {
             let block = Block::default().title(" Create new instance ").borders(Borders::ALL);
             f.render_widget(block, area);
             let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
@@ -134,6 +134,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                     Constraint::Length(2), // preset
                     Constraint::Length(2), // backup toggle
                     Constraint::Length(2), // retain_days
+                    Constraint::Length(2), // snapshot_hour
                     Constraint::Min(1),    // footer
                 ])
                 .split(inner);
@@ -172,6 +173,24 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 ),
                 chunks[5],
             );
+            // Auto-snapshot hour. Off when backups disabled (S3 not
+            // configured anyway, no point auto-running pgbackrest).
+            let snapshot_value = if *no_backup {
+                "(disabled — backups off)".to_string()
+            } else {
+                match snapshot_hour {
+                    None        => "off — manual snapshot only".to_string(),
+                    Some(h)     => format!("daily at {:02}:00 local — needs `pgforge schedule install`", h),
+                }
+            };
+            f.render_widget(
+                cycle_para(
+                    "Auto-snapshot (← →, digits):",
+                    &snapshot_value,
+                    *focus == 6,
+                ),
+                chunks[6],
+            );
             // Help footer — styled spans so the keys stand out from the
             // surrounding prose. Three lines because [n]ew is the most
             // discovery-heavy keybind and users were missing them.
@@ -197,7 +216,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),
-                chunks[6],
+                chunks[7],
             );
             // Place the terminal's blinking caret at the active text
             // field. ratatui hides the cursor in the alternate screen

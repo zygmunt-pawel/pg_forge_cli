@@ -47,6 +47,7 @@ async fn create_tiny_instance_then_cleanup() {
             override_state_root: Some(tmp.path().to_path_buf()),
             no_backup: false,
         retain_days: 30,
+        snapshot_hour: None,
         },
         &docker,
         tmp.path().to_path_buf(),

@@ -344,6 +344,7 @@ impl AppState {
                     preset: crate::domain::preset::Preset::Small,
                     no_backup: true, // safer default — S3 isn't configured on most fresh setups
                     retain_days: 30,
+                    snapshot_hour: Some(3),
                     focus: 0,
                     generated_password: random::password(24),
                     generated_pgbackrest_password: random::password(24),
@@ -419,19 +420,18 @@ impl AppState {
                 }
                 _ => Action::Nothing,
             },
-            Some(Modal::Create { name, app_user, pg_version, preset, no_backup, retain_days, focus, .. }) => {
-                // 6 fields, cycle with Tab. Space cycles preset / toggles
-                // backup / bumps retain_days. ← → on focus==5 ±1 day.
+            Some(Modal::Create { name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus, .. }) => {
+                // 7 fields, cycle with Tab. ←→/space cycle the cycler fields.
                 match k.code {
-                    KeyCode::Tab       => { *focus = (*focus + 1) % 6; Action::Nothing }
-                    KeyCode::BackTab   => { *focus = (*focus + 5) % 6; Action::Nothing }
+                    KeyCode::Tab       => { *focus = (*focus + 1) % 7; Action::Nothing }
+                    KeyCode::BackTab   => { *focus = (*focus + 6) % 7; Action::Nothing }
                     KeyCode::Enter     => Action::Submit,
                     KeyCode::Char(' ') => {
                         match *focus {
                             3 => { *preset = next_preset(*preset); Action::Nothing }
                             4 => { *no_backup = !*no_backup; Action::Nothing }
                             5 => { *retain_days = retain_days.saturating_add(1); Action::Nothing }
-                            // For text fields, space inserts a space character.
+                            6 => { *snapshot_hour = bump_snapshot_hour(*snapshot_hour, 1); Action::Nothing }
                             0 => { name.insert_char(' '); Action::Nothing }
                             1 => { app_user.insert_char(' '); Action::Nothing }
                             2 => { pg_version.insert_char(' '); Action::Nothing }
@@ -453,13 +453,30 @@ impl AppState {
                         }
                         Action::Nothing
                     }
+                    KeyCode::Left | KeyCode::Right if *focus == 6 => {
+                        let delta = if k.code == KeyCode::Right { 1 } else { -1 };
+                        *snapshot_hour = bump_snapshot_hour(*snapshot_hour, delta);
+                        Action::Nothing
+                    }
                     KeyCode::Char(d) if *focus == 5 && d.is_ascii_digit() => {
                         let v = d.to_digit(10).unwrap();
                         *retain_days = retain_days.saturating_mul(10).saturating_add(v);
                         Action::Nothing
                     }
+                    KeyCode::Char(d) if *focus == 6 && d.is_ascii_digit() => {
+                        let v = d.to_digit(10).unwrap();
+                        let cur = snapshot_hour.unwrap_or(0) as u32;
+                        let next = cur.saturating_mul(10).saturating_add(v).min(23) as u8;
+                        *snapshot_hour = Some(next);
+                        Action::Nothing
+                    }
                     KeyCode::Backspace if *focus == 5 => {
                         *retain_days /= 10;
+                        Action::Nothing
+                    }
+                    KeyCode::Backspace if *focus == 6 => {
+                        // Cycle hour → off → 23 → 22 → … via backspace? Keep simple: set None.
+                        *snapshot_hour = None;
                         Action::Nothing
                     }
                     KeyCode::Char(c) if !c.is_control() => {
@@ -596,12 +613,11 @@ impl AppState {
                 });
             }
             Some(Modal::Create {
-                name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                 generated_password, generated_pgbackrest_password,
             }) => {
-                // Helper to set the error + put the modal back unchanged.
                 let fail = |state: &mut AppState, msg: String,
-                            name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                            name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                             generated_password, generated_pgbackrest_password| {
                     state.last_op_error = Some(OpError {
                         instance: "create wizard".into(),
@@ -610,31 +626,29 @@ impl AppState {
                         at: Instant::now(),
                     });
                     state.modal = Some(Modal::Create {
-                        name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                        name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                         generated_password, generated_pgbackrest_password,
                     });
                 };
 
-                // Validate instance name
                 if let Err(msg) = validate_instance_name(&name.buf) {
                     fail(self, format!("instance name: {msg}"),
-                         name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                         name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                          generated_password, generated_pgbackrest_password);
                     return;
                 }
-                // Validate version
                 let ver = match pg_version.buf.parse::<u8>() {
                     Ok(v) if v > 0 => v,
                     _ => {
                         fail(self, format!("invalid pg version {:?} — expected 13..=18", pg_version.buf),
-                             name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                             name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                              generated_password, generated_pgbackrest_password);
                         return;
                     }
                 };
                 if app_user.buf.is_empty() {
                     fail(self, "App user cannot be empty.".into(),
-                         name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                         name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                          generated_password, generated_pgbackrest_password);
                     return;
                 }
@@ -645,7 +659,7 @@ impl AppState {
                     fail(self, format!(
                         "App user {:?} has invalid char {} — only letters, digits and `_` are allowed (no `-`, no spaces).",
                         app_user.buf, printable,
-                    ), name, app_user, pg_version, preset, no_backup, retain_days, focus,
+                    ), name, app_user, pg_version, preset, no_backup, retain_days, snapshot_hour, focus,
                        generated_password, generated_pgbackrest_password);
                     return;
                 }
@@ -658,6 +672,7 @@ impl AppState {
                     preset,
                     no_backup,
                     retain_days,
+                    snapshot_hour,
                 });
             }
             Some(Modal::ResizeTo { name, current, new }) => {
@@ -736,6 +751,21 @@ pub(crate) fn pitr_max_minutes_ago(earliest: Option<&str>) -> Option<u32> {
     let secs = earliest.duration_until(now).as_secs();
     if secs <= 0 { return Some(0); }
     Some((secs as u64 / 60) as u32)
+}
+
+/// Cycle snapshot_hour through None (off) → 0 → 1 → … → 23 → None
+/// when delta is ±1. None acts as a "before 0 / after 23" sentinel.
+fn bump_snapshot_hour(cur: Option<u8>, delta: i32) -> Option<u8> {
+    match (cur, delta) {
+        (None, d) if d > 0 => Some(0),
+        (None, _)          => Some(23),
+        (Some(h), d) if d > 0 => {
+            if h >= 23 { None } else { Some(h + 1) }
+        }
+        (Some(h), _) => {
+            if h == 0 { None } else { Some(h - 1) }
+        }
+    }
 }
 
 fn next_preset(p: crate::domain::preset::Preset) -> crate::domain::preset::Preset {

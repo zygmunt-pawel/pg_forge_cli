@@ -44,6 +44,7 @@ async fn upgrade_17_to_18_preserves_data() {
             override_state_root: Some(state_root.clone()),
             no_backup: true,
         retain_days: 30,
+        snapshot_hour: None,
         },
         &docker,
         state_root.clone(),

@@ -14,6 +14,72 @@ pub struct SnapshotArgs {
     pub override_state_root: Option<PathBuf>,
 }
 
+/// Iterate every managed instance, snapshot the ones whose scheduled
+/// hour is past for today AND that haven't been snapshotted yet today.
+/// Designed to be called every few minutes by the launchd agent
+/// installed via `pgforge schedule install`. Returns the count of
+/// instances that were actually snapshotted (0 if nothing was due).
+pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
+    let state_root = override_state_root
+        .unwrap_or_else(crate::state::instance::InstanceState::default_state_root);
+    let names = crate::state::instance::InstanceState::list_under(&state_root)?;
+    let mut count = 0usize;
+    for name in names {
+        let Ok(state) = crate::state::instance::InstanceState::load_under(&state_root, &name)
+        else {
+            continue;
+        };
+        if !state.instance.backup_enabled {
+            continue;
+        }
+        let Some(hour) = state.instance.snapshot_hour else {
+            continue;
+        };
+        if !is_snapshot_due(hour, state.instance.last_snapshot_at.as_deref()) {
+            continue;
+        }
+        tracing::info!(target: "pgforge::snapshot::due",
+            "running due snapshot for {name} (hour={hour})");
+        if let Err(e) = run(SnapshotArgs {
+            instance: name.clone(),
+            user_label: Some("auto-scheduled".into()),
+            override_state_root: Some(state_root.clone()),
+        }).await {
+            tracing::warn!(target: "pgforge::snapshot::due",
+                "due snapshot for {name} failed: {e}");
+            continue;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// True iff:
+///   1. the hour has already passed today in local time, AND
+///   2. last_snapshot_at is None OR it's older than today's window-open time.
+fn is_snapshot_due(hour: u8, last_snapshot_at: Option<&str>) -> bool {
+    use std::str::FromStr;
+    let zoned_now = jiff::Zoned::now();
+    let today = zoned_now.date();
+    let now_secs = zoned_now.hour() as i64 * 3600
+        + zoned_now.minute() as i64 * 60
+        + zoned_now.second() as i64;
+    let hour_secs = (hour as i64) * 3600;
+    if now_secs < hour_secs {
+        return false; // window hasn't opened yet today
+    }
+    let Some(last) = last_snapshot_at else {
+        return true; // never snapshotted
+    };
+    let Ok(last_ts) = jiff::Timestamp::from_str(last) else {
+        return true; // unparseable → treat as never (best-effort safety)
+    };
+    // Convert last snapshot to the local zone so "today" comparison
+    // matches the user's expectation.
+    let last_zoned = last_ts.to_zoned(zoned_now.time_zone().clone());
+    last_zoned.date() != today
+}
+
 pub async fn run(args: SnapshotArgs) -> Result<SnapshotRecord> {
     let state_root = args
         .override_state_root
@@ -74,6 +140,13 @@ pub async fn run_with_engine<E: DockerEngine>(
     };
     file.snapshots.push(record.clone());
     file.save_for(&state_root, &args.instance)?;
+
+    // Record on Instance.last_snapshot_at so `pgforge snapshot --due`
+    // can tell tomorrow whether we're already covered for the day.
+    if let Ok(mut state) = crate::state::instance::InstanceState::load_under(&state_root, &args.instance) {
+        state.instance.last_snapshot_at = Some(record.taken_at.clone());
+        let _ = state.save_under(&state_root);
+    }
 
     Ok(record)
 }

@@ -47,6 +47,7 @@ async fn clone_running_instance_is_reachable() {
             override_state_root: Some(state_root.clone()),
             no_backup: false,
         retain_days: 30,
+        snapshot_hour: None,
         },
         &docker,
         state_root.clone(),
