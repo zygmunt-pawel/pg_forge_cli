@@ -31,9 +31,15 @@ docker ps
 # CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS   PORTS   NAMES
 ```
 
-OrbStack starts automatically on subsequent logins. Alternatively, if you
-already have Docker Desktop running, that works too — pgforge talks to
-whatever Docker socket is exposed.
+Make it start automatically on every login so your pgforge instances come
+back up after a reboot:
+```bash
+osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/OrbStack.app", hidden:true}'
+```
+(GUI equivalent: OrbStack → Settings → System → toggle **Open at login**.)
+
+If you already have Docker Desktop running instead, that works too —
+pgforge talks to whatever Docker socket is exposed via `DOCKER_HOST`.
 
 ### 2. pgforge binary
 
