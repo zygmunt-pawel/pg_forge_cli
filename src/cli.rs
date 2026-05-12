@@ -73,6 +73,17 @@ pub enum Command {
         #[arg(long = "to")]
         to_version: u8,
     },
+    /// Replace the running pgforge binary with the latest GitHub
+    /// release. Atomic rename — safe even while the running TUI is
+    /// holding the old binary in memory; the new version applies on
+    /// next exec. Idempotent: prints "already on latest" when there's
+    /// nothing newer.
+    SelfUpdate {
+        /// Re-download and replace even if local version matches the
+        /// latest release tag.
+        #[arg(long)]
+        force: bool,
+    },
     /// Permanently delete an instance: stop + remove container, drop
     /// data volume, remove state.toml. Optionally also wipe S3 backups
     /// (full + WAL archives + PITR window) via pgbackrest stanza-delete.
@@ -261,6 +272,16 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("Upgraded {name} to PostgreSQL {to_version}.");
+            Ok(())
+        }
+        Some(Command::SelfUpdate { force }) => {
+            let out = crate::commands::self_update::run(force).await?;
+            if out.upgraded {
+                println!("Upgraded {} → {}. Restart pgforge to use the new binary.",
+                    out.current_version, out.latest_tag);
+            } else {
+                println!("Already on {}.", out.current_version);
+            }
             Ok(())
         }
         Some(Command::Destroy { name, delete_backups, yes }) => {

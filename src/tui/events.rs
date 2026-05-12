@@ -20,6 +20,15 @@ pub enum Event {
     OpStarted { instance: String, kind: OpKind },
     OpFinished { instance: String, kind: OpKind, result: std::result::Result<(), String> },
     RefreshFailed { name: String, err: String },
+    /// `pgforge self-update` finished. `upgraded` is true when the
+    /// binary was actually replaced; false means we were already on
+    /// the latest tag and nothing was touched.
+    SelfUpdateDone {
+        upgraded: bool,
+        latest_tag: String,
+        current_version: String,
+    },
+    SelfUpdateFailed { msg: String },
 }
 
 #[derive(Debug, Clone)]

@@ -21,6 +21,10 @@ pub struct AppState {
     /// Stored as u64 (× 10 for one decimal of precision) because that's
     /// what ratatui::Sparkline takes; render divides by 10.
     pub cpu_history: HashMap<String, VecDeque<u64>>,
+    /// Flag drained by the main loop: when true, spawn an async
+    /// pgforge self-update check (curl latest binary + atomic
+    /// replace). Set by the `[u]` keybind.
+    pub pending_self_update: bool,
     pub snapshots: HashMap<String, SnapshotsView>,
     pub in_progress: HashMap<String, RunningOp>,
     pub selected: usize,
@@ -64,6 +68,7 @@ impl Default for AppState {
             pending_creates: Vec::new(),
             pending_show_created: Vec::new(),
             cpu_history: HashMap::new(),
+            pending_self_update: false,
         }
     }
 }
@@ -124,6 +129,26 @@ impl AppState {
             }
             Event::SnapshotsRefreshed { name, view } => {
                 self.snapshots.insert(name, view);
+            }
+            Event::SelfUpdateDone { upgraded, latest_tag, current_version } => {
+                let msg = if upgraded {
+                    format!("pgforge updated {current_version} → {latest_tag}. Restart pgforge to use the new binary.")
+                } else {
+                    format!("pgforge already on {current_version} (latest is {latest_tag})")
+                };
+                self.flash = Some(Flash {
+                    msg,
+                    kind: FlashKind::Success,
+                    at: Instant::now(),
+                });
+            }
+            Event::SelfUpdateFailed { msg } => {
+                self.last_op_error = Some(OpError {
+                    instance: "pgforge".into(),
+                    kind: OpKind::Snapshot, // no dedicated SelfUpdate kind for OpError
+                    msg: format!("self-update failed: {msg}"),
+                    at: Instant::now(),
+                });
             }
             Event::RefreshFailed { name, err } => {
                 tracing::warn!(target: "pgforge::tui", "refresh failed for {name}: {err}");
@@ -205,8 +230,16 @@ impl AppState {
                 }
             }
             KeyCode::Char('u') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    self.modal = Some(Modal::UpgradeTo { source: n, input: TextField::default() });
+                // pg_upgrade (major-version pg) is rare enough that it
+                // lives only in the CLI now. `[u]` in the TUI means
+                // "self-update pgforge from GitHub releases".
+                if !self.pending_self_update {
+                    self.pending_self_update = true;
+                    self.flash = Some(Flash {
+                        msg: "checking for pgforge update…".into(),
+                        kind: FlashKind::Info,
+                        at: Instant::now(),
+                    });
                 }
             }
             KeyCode::Char('r') => {
@@ -855,11 +888,50 @@ mod tests {
     }
 
     #[test]
-    fn key_u_opens_upgrade_to_modal() {
+    fn key_u_triggers_self_update() {
+        // [u] in the TUI is `pgforge self-update` now (pg_upgrade moved
+        // to CLI). Setting the flag is enough; the main loop drains it
+        // into an async task — apply_event stays pure.
         let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
         s.apply_event(key(KeyCode::Char('u')));
-        assert!(matches!(s.modal, Some(Modal::UpgradeTo { ref source, .. }) if source == "alpha"));
+        assert!(s.pending_self_update);
+        assert!(matches!(s.flash, Some(Flash { kind: FlashKind::Info, .. })));
+        assert!(s.modal.is_none(), "self-update doesn't open a modal");
+    }
+
+    #[test]
+    fn self_update_done_upgraded_sets_success_flash() {
+        let mut s = AppState::default();
+        s.apply_event(Event::SelfUpdateDone {
+            upgraded: true,
+            latest_tag: "v0.2.0".into(),
+            current_version: "v0.1.11".into(),
+        });
+        let f = s.flash.as_ref().expect("flash set");
+        assert!(matches!(f.kind, FlashKind::Success));
+        assert!(f.msg.contains("v0.1.11"));
+        assert!(f.msg.contains("v0.2.0"));
+        assert!(f.msg.contains("Restart"));
+    }
+
+    #[test]
+    fn self_update_done_noop_flash_when_already_latest() {
+        let mut s = AppState::default();
+        s.apply_event(Event::SelfUpdateDone {
+            upgraded: false,
+            latest_tag: "v0.1.11".into(),
+            current_version: "v0.1.11".into(),
+        });
+        let f = s.flash.as_ref().expect("flash set");
+        assert!(f.msg.contains("already on"));
+    }
+
+    #[test]
+    fn self_update_failed_sets_op_error() {
+        let mut s = AppState::default();
+        s.apply_event(Event::SelfUpdateFailed { msg: "curl: HTTP 404".into() });
+        let e = s.last_op_error.as_ref().expect("error set");
+        assert!(e.msg.contains("curl"));
     }
 
     #[test]
@@ -907,7 +979,8 @@ mod tests {
     #[test]
     fn op_keys_noop_when_no_instance_selected() {
         let mut s = AppState::default();
-        for c in ['s', 'c', 'u', 'r', 'R'] {
+        // [u] is now self-update; doesn't require a selected instance.
+        for c in ['s', 'c', 'r', 'R'] {
             let kc = if c == 'R' {
                 Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT))
             } else { key(KeyCode::Char(c)) };

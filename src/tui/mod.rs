@@ -84,6 +84,29 @@ async fn run_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         for n in std::mem::take(&mut state.refresh_requests) {
             refresh::refresh_one(n, tx.clone(), None);
         }
+        // Self-update is fire-and-forget: spawn a task that emits
+        // SelfUpdateDone / SelfUpdateFailed; flag prevents queuing
+        // a second update while one's already in flight.
+        if state.pending_self_update {
+            state.pending_self_update = false;
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                match crate::commands::self_update::run(false).await {
+                    Ok(out) => {
+                        let _ = tx2.send(crate::tui::events::Event::SelfUpdateDone {
+                            upgraded: out.upgraded,
+                            latest_tag: out.latest_tag,
+                            current_version: out.current_version,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx2.send(crate::tui::events::Event::SelfUpdateFailed {
+                            msg: e.to_string(),
+                        });
+                    }
+                }
+            });
+        }
         for req in std::mem::take(&mut state.pending_creates) {
             ops::spawn_create(req, tx.clone(), None);
         }

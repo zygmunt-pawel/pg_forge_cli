@@ -5,6 +5,7 @@ pub mod ls;
 pub mod reconfigure;
 pub mod restore;
 pub mod rotate;
+pub mod self_update;
 pub mod snapshot;
 pub mod snapshots;
 pub mod status;
