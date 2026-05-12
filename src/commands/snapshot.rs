@@ -131,6 +131,7 @@ pub async fn run_with_engine<E: DockerEngine>(
         ))
     })?;
 
+    let _lock = crate::util::fs::LockedStateRoot::acquire(&state_root)?;
     let mut file = SnapshotsFile::load_for(&state_root, &args.instance)?;
     let record = SnapshotRecord {
         label: label.clone(),
@@ -141,12 +142,13 @@ pub async fn run_with_engine<E: DockerEngine>(
     file.snapshots.push(record.clone());
     file.save_for(&state_root, &args.instance)?;
 
-    // Record on Instance.last_snapshot_at so `pgforge snapshot --due`
-    // can tell tomorrow whether we're already covered for the day.
-    if let Ok(mut state) = crate::state::instance::InstanceState::load_under(&state_root, &args.instance) {
-        state.instance.last_snapshot_at = Some(record.taken_at.clone());
-        let _ = state.save_under(&state_root);
-    }
+    // Re-load InstanceState INSIDE the lock so we don't clobber concurrent
+    // edits (e.g. user changing snapshot_hour via TUI [t] while we run).
+    let mut state =
+        crate::state::instance::InstanceState::load_under(&state_root, &args.instance)?;
+    state.instance.last_snapshot_at = Some(record.taken_at.clone());
+    state.save_under(&state_root)?;
+    drop(_lock);
 
     Ok(record)
 }

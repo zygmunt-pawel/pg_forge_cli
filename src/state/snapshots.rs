@@ -43,6 +43,6 @@ impl SnapshotsFile {
         let raw = toml::to_string_pretty(self).map_err(|e| {
             PgForgeError::Anyhow(anyhow::anyhow!("serialize snapshots.toml: {e}"))
         })?;
-        std::fs::write(&path, raw).map_err(|e| PgForgeError::Io { path, source: e })
+        crate::util::fs::atomic_write(&path, raw.as_bytes())
     }
 }
