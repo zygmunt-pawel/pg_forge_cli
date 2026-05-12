@@ -52,21 +52,34 @@ pub fn install() -> Result<PathBuf> {
     // Try to load it now. On headless macOS this can fail with
     // "Domain does not support specified action" — the plist is still
     // on disk and will load at the next user login.
-    let _ = std::process::Command::new("launchctl")
+    // (Task 3.4 will prepend a defensive best-effort bootout here.)
+    let status = std::process::Command::new("launchctl")
         .args(["bootstrap"])
         .arg(format!("gui/{}", uid_or_501()))
         .arg(&plist_path)
-        .output();
+        .status()
+        .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("launchctl bootstrap: {e}")))?;
+    if !status.success() {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "launchctl bootstrap returned {status}"
+        )));
+    }
     Ok(plist_path)
 }
 
 pub fn uninstall() -> Result<()> {
     let path = plist_path()?;
-    let _ = std::process::Command::new("launchctl")
+    let status = std::process::Command::new("launchctl")
         .args(["bootout"])
         .arg(format!("gui/{}", uid_or_501()))
         .arg(&path)
-        .output();
+        .status()
+        .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("launchctl bootout: {e}")))?;
+    if !status.success() {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "launchctl bootout returned {status}"
+        )));
+    }
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| PgForgeError::Io {
             path: path.clone(),

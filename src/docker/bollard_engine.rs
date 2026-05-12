@@ -80,6 +80,13 @@ impl DockerEngine for BollardEngine {
         while let Some(item) = stream.next().await {
             match item {
                 Ok(info) => {
+                    if let Some(ed) = info.error_detail.as_ref() {
+                        let msg = ed
+                            .message
+                            .as_deref()
+                            .unwrap_or("(no message)");
+                        return Err(PgForgeError::Docker(format!("docker build failed: {msg}")));
+                    }
                     if let Some(ref output) = info.stream {
                         let trimmed = output.trim();
                         if !trimmed.is_empty() {
