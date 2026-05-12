@@ -1,9 +1,20 @@
 //! Plan 5 — clipboard support for the TUI. Builds postgres URIs from
-//! InstanceState (with real password from state.toml) and copies them
-//! to the system pasteboard via arboard.
+//! InstanceState and copies them via two strategies:
+//!
+//! - **OSC52** — terminal escape sequence interpreted by the *local*
+//!   terminal (the one the user is looking at), making this work
+//!   correctly over SSH where arboard cannot reach the user's clipboard.
+//! - **arboard** — direct system pasteboard. Works on a local Mac/Linux
+//!   desktop session; fails on headless macOS (no GUI/Aqua session).
+//!
+//! We try OSC52 first when `SSH_CONNECTION` is set (the user is remote
+//! and OSC52 is the only thing that can reach their clipboard), and
+//! arboard first when local. The other one is the fallback. Either
+//! succeeding is reported as success.
 
 use crate::error::{PgForgeError, Result};
 use crate::state::instance::InstanceState;
+use base64::Engine;
 
 /// Build a postgres connection URI for an instance, using the real
 /// password from state.toml (mode 0600). The TUI never *prints* this —
@@ -19,9 +30,44 @@ pub fn build_connection_uri(state: &InstanceState) -> String {
 }
 
 pub fn copy_to_clipboard(s: &str) -> Result<()> {
+    let remote = std::env::var_os("SSH_CONNECTION").is_some()
+        || std::env::var_os("SSH_TTY").is_some();
+    let strategies: [fn(&str) -> std::result::Result<(), String>; 2] = if remote {
+        [copy_via_osc52, copy_via_arboard]
+    } else {
+        [copy_via_arboard, copy_via_osc52]
+    };
+    let mut errors = Vec::with_capacity(2);
+    for strat in strategies {
+        match strat(s) {
+            Ok(()) => return Ok(()),
+            Err(e) => errors.push(e),
+        }
+    }
+    Err(PgForgeError::Anyhow(anyhow::anyhow!(
+        "no clipboard backend worked: {}",
+        errors.join("; ")
+    )))
+}
+
+/// OSC52: print escape sequence to stdout. The terminal emulator
+/// intercepts `\x1b]52;c;<base64>\x07` and copies the decoded payload
+/// into the user's local clipboard, regardless of where the process
+/// itself is running.
+fn copy_via_osc52(s: &str) -> std::result::Result<(), String> {
+    use std::io::Write;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+    let mut out = std::io::stdout().lock();
+    write!(out, "\x1b]52;c;{}\x07", b64).map_err(|e| format!("OSC52 write: {e}"))?;
+    out.flush().map_err(|e| format!("OSC52 flush: {e}"))?;
+    Ok(())
+}
+
+fn copy_via_arboard(s: &str) -> std::result::Result<(), String> {
     use arboard::Clipboard;
-    let mut cb = Clipboard::new().map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("clipboard: {e}")))?;
-    cb.set_text(s.to_string()).map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("clipboard set_text: {e}")))?;
+    let mut cb = Clipboard::new().map_err(|e| format!("arboard new: {e}"))?;
+    cb.set_text(s.to_string())
+        .map_err(|e| format!("arboard set_text: {e}"))?;
     Ok(())
 }
 

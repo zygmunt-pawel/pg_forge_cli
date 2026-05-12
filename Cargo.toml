@@ -1,6 +1,6 @@
 [package]
 name = "pgforge"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host"
 license = "MIT OR Apache-2.0"
@@ -35,6 +35,7 @@ serde_json = "1.0.149"
 ratatui = "0.29"
 crossterm = "0.28"
 arboard = "3"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
