@@ -24,10 +24,30 @@ fn entrypoint_restores_latest_when_no_target_time() {
 #[test]
 fn entrypoint_skips_restore_if_pgdata_already_populated() {
     let script = generate_restore_entrypoint(None);
+    // Guard is now a marker file, not PG_VERSION (PG_VERSION can exist after a
+    // partial restore, which would cause a broken cluster to boot without retrying).
     assert!(
-        script.contains("PG_VERSION") || script.contains("postmaster.pid") || script.contains("ls -A"),
-        "expected a 'is PGDATA empty?' check, got:\n{script}"
+        script.contains(".pgforge-restore-complete") || script.contains("postmaster.pid") || script.contains("ls -A"),
+        "expected a 're-entry guard' check, got:\n{script}"
     );
+}
+
+#[test]
+fn restore_script_uses_marker_not_pg_version() {
+    let s = generate_restore_entrypoint(None);
+    assert!(s.contains(".pgforge-restore-complete"),
+        "marker missing — script will re-skip restore on PG_VERSION from partial restore");
+    assert!(!s.contains("[ ! -f \"$PGDATA/PG_VERSION\" ]"),
+        "PG_VERSION guard still present");
+}
+
+#[test]
+fn restore_script_writes_marker_after_pgbackrest() {
+    let s = generate_restore_entrypoint(None);
+    let marker_idx = s.find("touch \"$MARKER\"").expect("marker write missing");
+    let pgbackrest_idx = s.find("pgbackrest").expect("pgbackrest missing");
+    assert!(pgbackrest_idx < marker_idx,
+        "marker must be written AFTER pgbackrest restore, not before");
 }
 
 #[test]

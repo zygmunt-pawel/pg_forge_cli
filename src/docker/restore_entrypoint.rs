@@ -1,8 +1,14 @@
-/// Render the entrypoint script bind-mounted into a restore container. If
-/// PGDATA is empty (first start), run `pgbackrest restore`; then chain into
+/// Render the entrypoint script bind-mounted into a restore container. If the
+/// marker file is absent (first start or failed previous attempt), run
+/// `pgbackrest restore` and write the marker only on success; then chain into
 /// the official postgres entrypoint regardless. The script runs as root via
 /// the postgres image's default entrypoint mechanism; the inner `su -` calls
 /// drop privileges to the `postgres` user where needed.
+///
+/// The marker (`$PGDATA/.pgforge-restore-complete`) is written AFTER pgbackrest
+/// returns 0. A failed or partial restore leaves `PG_VERSION` behind in pgdata;
+/// using `PG_VERSION` as the guard would cause a retry to skip restore and boot
+/// a corrupt cluster. The marker is absent in that case, so the retry proceeds.
 pub fn generate_restore_entrypoint(target_time: Option<&str>) -> String {
     let target_args = match target_time {
         Some(t) => format!(
@@ -16,12 +22,20 @@ pub fn generate_restore_entrypoint(target_time: Option<&str>) -> String {
 set -eu
 
 PGDATA="/var/lib/postgresql/data/pgdata"
+MARKER="$PGDATA/.pgforge-restore-complete"
 
-# Restore only if the data directory is empty / has no PG cluster yet.
-if [ ! -f "$PGDATA/PG_VERSION" ]; then
+# Marker is written ONLY after pgbackrest restore returns 0. A failed or
+# partial restore leaves PG_VERSION behind in pgdata — without the marker
+# we retry instead of booting a broken cluster.
+if [ ! -f "$MARKER" ]; then
     mkdir -p "$PGDATA"
     chown -R postgres:postgres "$PGDATA"
+    # Clear any half-restored content; pgbackrest restore --delta would also
+    # work but we want a strict re-do here.
+    find "$PGDATA" -mindepth 1 -delete 2>/dev/null || true
     su - postgres -c 'pgbackrest --stanza=main restore --pg1-path=/var/lib/postgresql/data/pgdata{target_args}'
+    touch "$MARKER"
+    chown postgres:postgres "$MARKER"
 fi
 
 exec docker-entrypoint.sh postgres \
