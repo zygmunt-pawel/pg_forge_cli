@@ -20,6 +20,7 @@ pub struct AppState {
     pub stale_status: HashSet<String>,
     pub now: Instant,
     pub should_quit: bool,
+    pub pending_ops: Vec<(String, OpKind)>,
 }
 
 impl Default for AppState {
@@ -36,6 +37,7 @@ impl Default for AppState {
             stale_status: HashSet::new(),
             now: Instant::now(),
             should_quit: false,
+            pending_ops: Vec::new(),
         }
     }
 }
@@ -119,7 +121,7 @@ impl AppState {
     fn handle_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         if self.modal.is_some() {
-            // Modal handling — Phase 3 (Task 3.x).
+            self.handle_modal_key(k);
             return;
         }
         // No modal — global keymap.
@@ -134,9 +136,222 @@ impl AppState {
             }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => { self.last_op_error = None; }
-            _ => {} // op keys + ? + e in Phase 3.
+            KeyCode::Char('s') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    if !self.in_progress.contains_key(&n) {
+                        self.pending_ops.push((n, OpKind::Snapshot));
+                    }
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::CloneAs { source: n, input: TextField::default() });
+                }
+            }
+            KeyCode::Char('u') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::UpgradeTo { source: n, input: TextField::default() });
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::RestoreAs {
+                        source: n,
+                        as_input: TextField::default(),
+                        target_time: TextField::default(),
+                        focus: 0,
+                    });
+                }
+            }
+            KeyCode::Char('R') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::Confirm {
+                        kind: PendingDestructiveOp::Rotate { name: n.clone() },
+                        prompt: format!("Rotate {n}? Container restarts (~10s downtime), volume preserved."),
+                    });
+                }
+            }
+            KeyCode::Char('?') => {
+                if let Some(e) = &self.last_op_error {
+                    self.modal = Some(Modal::ErrorDetail { msg: e.msg.clone() });
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    if let Some(v) = self.snapshots.get(&n).cloned() {
+                        self.modal = Some(Modal::Snapshots { name: n, view: v });
+                    }
+                }
+            }
+            _ => {}
         }
     }
+
+    fn handle_modal_key(&mut self, k: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        if k.code == KeyCode::Esc { self.modal = None; return; }
+
+        // Decide what action to take, dropping the borrow before mutating elsewhere.
+        enum Action { Nothing, Submit, ConfirmYes, ConfirmNo }
+        let action = match &mut self.modal {
+            Some(Modal::CloneAs { input, .. }) | Some(Modal::UpgradeTo { input, .. }) => match k.code {
+                KeyCode::Char(c) if !c.is_control() => { input.insert_char(c); Action::Nothing }
+                KeyCode::Backspace => { input.backspace(); Action::Nothing }
+                KeyCode::Left => { input.move_left(); Action::Nothing }
+                KeyCode::Right => { input.move_right(); Action::Nothing }
+                KeyCode::Enter => Action::Submit,
+                _ => Action::Nothing,
+            },
+            Some(Modal::RestoreAs { as_input, target_time, focus, .. }) => match k.code {
+                KeyCode::Tab => { *focus = (*focus + 1) % 2; Action::Nothing }
+                KeyCode::Char(c) if !c.is_control() => {
+                    if *focus == 0 { as_input.insert_char(c); } else { target_time.insert_char(c); }
+                    Action::Nothing
+                }
+                KeyCode::Backspace => {
+                    if *focus == 0 { as_input.backspace(); } else { target_time.backspace(); }
+                    Action::Nothing
+                }
+                KeyCode::Left => {
+                    if *focus == 0 { as_input.move_left(); } else { target_time.move_left(); }
+                    Action::Nothing
+                }
+                KeyCode::Right => {
+                    if *focus == 0 { as_input.move_right(); } else { target_time.move_right(); }
+                    Action::Nothing
+                }
+                KeyCode::Enter => Action::Submit,
+                _ => Action::Nothing,
+            },
+            Some(Modal::Confirm { .. }) => match k.code {
+                KeyCode::Char('y') | KeyCode::Enter => Action::ConfirmYes,
+                KeyCode::Char('n') => Action::ConfirmNo,
+                _ => Action::Nothing,
+            },
+            Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. }) | None => Action::Nothing,
+        };
+        match action {
+            Action::Nothing => {}
+            Action::Submit => self.submit_modal(),
+            Action::ConfirmYes => self.confirm_modal(true),
+            Action::ConfirmNo => self.confirm_modal(false),
+        }
+    }
+
+    fn submit_modal(&mut self) {
+        use std::str::FromStr;
+        let taken = self.modal.take();
+        match taken {
+            Some(Modal::CloneAs { source, input }) => {
+                match validate_instance_name(&input.buf) {
+                    Ok(()) => self.pending_ops.push((format!("{source}:{}", input.buf), OpKind::Clone)),
+                    Err(msg) => {
+                        self.last_op_error = Some(OpError {
+                            instance: source.clone(), kind: OpKind::Clone, msg, at: Instant::now(),
+                        });
+                        // Put it back so user can fix.
+                        self.modal = Some(Modal::CloneAs { source, input });
+                    }
+                }
+            }
+            Some(Modal::UpgradeTo { source, input }) => {
+                let current = self.instances.iter()
+                    .find(|r| r.name == source).map(|r| r.pg_version).unwrap_or(0);
+                match input.buf.parse::<u8>() {
+                    Ok(to) if to > current => {
+                        self.modal = Some(Modal::Confirm {
+                            kind: PendingDestructiveOp::Upgrade { name: source.clone(), to },
+                            prompt: format!(
+                                "Upgrade {source} from PG{current} to PG{to}? Takes several minutes; an auto pre-snapshot is taken first."
+                            ),
+                        });
+                    }
+                    Ok(to) => {
+                        self.last_op_error = Some(OpError {
+                            instance: source.clone(), kind: OpKind::Upgrade,
+                            msg: format!("target version {to} must be greater than current PG{current}"),
+                            at: Instant::now(),
+                        });
+                        self.modal = Some(Modal::UpgradeTo { source, input });
+                    }
+                    Err(_) => {
+                        self.last_op_error = Some(OpError {
+                            instance: source.clone(), kind: OpKind::Upgrade,
+                            msg: format!("invalid version: {:?}", input.buf), at: Instant::now(),
+                        });
+                        self.modal = Some(Modal::UpgradeTo { source, input });
+                    }
+                }
+            }
+            Some(Modal::RestoreAs { source, as_input, target_time, focus }) => {
+                let as_ = as_input.buf.clone();
+                let tt = if target_time.buf.is_empty() { None } else { Some(target_time.buf.clone()) };
+                if let Err(msg) = validate_instance_name(&as_) {
+                    self.last_op_error = Some(OpError {
+                        instance: source.clone(), kind: OpKind::Restore, msg, at: Instant::now(),
+                    });
+                    self.modal = Some(Modal::RestoreAs { source, as_input, target_time, focus });
+                    return;
+                }
+                if let Some(ref ts) = tt {
+                    if let Err(e) = <jiff::Timestamp as FromStr>::from_str(ts) {
+                        self.last_op_error = Some(OpError {
+                            instance: source.clone(), kind: OpKind::Restore,
+                            msg: format!("invalid target_time RFC3339: {e}"), at: Instant::now(),
+                        });
+                        self.modal = Some(Modal::RestoreAs { source, as_input, target_time, focus });
+                        return;
+                    }
+                }
+                self.modal = Some(Modal::Confirm {
+                    kind: PendingDestructiveOp::Restore { source: source.clone(), as_: as_.clone(), target_time: tt },
+                    prompt: format!("Restore {source} → new instance {as_}? Takes minutes."),
+                });
+            }
+            Some(other) => { self.modal = Some(other); /* should not happen */ }
+            None => {}
+        }
+    }
+
+    fn confirm_modal(&mut self, yes: bool) {
+        let taken = self.modal.take();
+        if !yes { return; }
+        if let Some(Modal::Confirm { kind, .. }) = taken {
+            match kind {
+                PendingDestructiveOp::Rotate { name } => {
+                    self.pending_ops.push((name, OpKind::Rotate));
+                }
+                PendingDestructiveOp::Upgrade { name, to } => {
+                    self.pending_ops.push((format!("{name}@{to}"), OpKind::Upgrade));
+                }
+                PendingDestructiveOp::Restore { source, as_, target_time } => {
+                    let key = match target_time {
+                        Some(t) => format!("{source}:{as_}@{t}"),
+                        None    => format!("{source}:{as_}"),
+                    };
+                    self.pending_ops.push((key, OpKind::Restore));
+                }
+            }
+        }
+    }
+}
+
+/// Validator reused by clone+restore. Matches the regex used by
+/// `domain::instance::Instance::validate_name`.
+fn validate_instance_name(s: &str) -> std::result::Result<(), String> {
+    if s.is_empty() { return Err("name cannot be empty".into()); }
+    if s.len() > 63 { return Err("name too long (max 63 chars)".into()); }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_lowercase() {
+        return Err(format!("name must start with a-z, got {:?}", first));
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+            return Err(format!("invalid character {:?}: allowed [a-z0-9_-]", c));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -381,5 +596,263 @@ mod tests {
         });
         s.apply_event(key(KeyCode::Esc));
         assert!(s.last_op_error.is_none());
+    }
+
+    // --- Task 3.1: Open modal on op keys ---
+
+    #[test]
+    fn key_c_opens_clone_as_modal_for_selected() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.apply_event(key(KeyCode::Char('c')));
+        assert!(matches!(s.modal, Some(Modal::CloneAs { ref source, .. }) if source == "alpha"));
+    }
+
+    #[test]
+    fn key_u_opens_upgrade_to_modal() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.apply_event(key(KeyCode::Char('u')));
+        assert!(matches!(s.modal, Some(Modal::UpgradeTo { ref source, .. }) if source == "alpha"));
+    }
+
+    #[test]
+    fn key_r_opens_restore_as_modal() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.apply_event(key(KeyCode::Char('r')));
+        assert!(matches!(s.modal, Some(Modal::RestoreAs { ref source, .. }) if source == "alpha"));
+    }
+
+    #[test]
+    fn key_shift_r_opens_confirm_rotate() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.apply_event(Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)));
+        assert!(matches!(s.modal, Some(Modal::Confirm { kind: PendingDestructiveOp::Rotate { ref name }, .. }) if name == "alpha"));
+    }
+
+    #[test]
+    fn key_question_opens_error_detail_when_error_present() {
+        let mut s = AppState::default();
+        s.last_op_error = Some(OpError { instance:"a".into(), kind: OpKind::Upgrade, msg: "boom".into(), at: Instant::now() });
+        s.apply_event(key(KeyCode::Char('?')));
+        assert!(matches!(s.modal, Some(Modal::ErrorDetail { ref msg }) if msg == "boom"));
+    }
+
+    #[test]
+    fn key_question_without_error_is_noop() {
+        let mut s = AppState::default();
+        s.apply_event(key(KeyCode::Char('?')));
+        assert!(s.modal.is_none());
+    }
+
+    #[test]
+    fn key_e_opens_snapshots_modal_when_snapshots_loaded() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.snapshots.insert("alpha".into(), SnapshotsView {
+            list: Vec::new(), pitr: Default::default(),
+        });
+        s.apply_event(key(KeyCode::Char('e')));
+        assert!(matches!(s.modal, Some(Modal::Snapshots { ref name, .. }) if name == "alpha"));
+    }
+
+    #[test]
+    fn op_keys_noop_when_no_instance_selected() {
+        let mut s = AppState::default();
+        for c in ['s', 'c', 'u', 'r', 'R'] {
+            let kc = if c == 'R' {
+                Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT))
+            } else { key(KeyCode::Char(c)) };
+            s.apply_event(kc);
+        }
+        assert!(s.modal.is_none());
+        assert!(s.in_progress.is_empty());
+    }
+
+    // --- Task 3.2: [s] triggers Snapshot op event (no modal) ---
+
+    #[test]
+    fn key_s_enqueues_snapshot_op_for_selected() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.apply_event(key(KeyCode::Char('s')));
+        assert_eq!(s.pending_ops, vec![("alpha".into(), OpKind::Snapshot)]);
+        assert!(s.modal.is_none(), "snapshot has no modal");
+    }
+
+    #[test]
+    fn key_s_noop_when_op_in_progress_on_same_instance() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.in_progress.insert("alpha".into(), RunningOp { kind: OpKind::Snapshot, started_at: Instant::now() });
+        s.apply_event(key(KeyCode::Char('s')));
+        assert!(s.pending_ops.is_empty(), "per-instance lock prevents enqueue");
+    }
+
+    // --- Task 3.3: Modal-on key dispatch + Esc closes modal ---
+
+    #[test]
+    fn esc_in_modal_closes_modal() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::CloneAs { source: "a".into(), input: TextField::default() });
+        s.apply_event(key(KeyCode::Esc));
+        assert!(s.modal.is_none());
+    }
+
+    #[test]
+    fn typing_in_clone_as_modal_appends_to_input() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::CloneAs { source: "a".into(), input: TextField::default() });
+        s.apply_event(key(KeyCode::Char('x')));
+        s.apply_event(key(KeyCode::Char('y')));
+        if let Some(Modal::CloneAs { input, .. }) = &s.modal {
+            assert_eq!(input.buf, "xy");
+        } else { panic!("modal closed"); }
+    }
+
+    #[test]
+    fn backspace_in_modal() {
+        let mut s = AppState::default();
+        let mut f = TextField::default();
+        f.insert_char('a'); f.insert_char('b');
+        s.modal = Some(Modal::CloneAs { source: "x".into(), input: f });
+        s.apply_event(key(KeyCode::Backspace));
+        if let Some(Modal::CloneAs { input, .. }) = &s.modal {
+            assert_eq!(input.buf, "a");
+        } else { panic!(); }
+    }
+
+    // --- Task 3.4: Modal submit — validation + transitions ---
+
+    #[test]
+    fn clone_as_enter_with_valid_name_enqueues_clone() {
+        let mut s = AppState::default();
+        let mut f = TextField::default();
+        for c in "beta".chars() { f.insert_char(c); }
+        s.modal = Some(Modal::CloneAs { source: "alpha".into(), input: f });
+        s.apply_event(key(KeyCode::Enter));
+        assert!(s.modal.is_none());
+        assert_eq!(s.pending_ops.last(), Some(&("alpha:beta".to_string(), OpKind::Clone)));
+    }
+
+    #[test]
+    fn clone_as_invalid_name_keeps_modal_and_flashes_error() {
+        let mut s = AppState::default();
+        let mut f = TextField::default();
+        f.insert_char('-'); // invalid (must start with [a-z])
+        s.modal = Some(Modal::CloneAs { source: "alpha".into(), input: f });
+        s.apply_event(key(KeyCode::Enter));
+        assert!(s.modal.is_some(), "modal stays open on validation failure");
+        assert!(s.last_op_error.is_some(), "validation surfaces as error");
+    }
+
+    #[test]
+    fn upgrade_to_valid_version_transitions_to_confirm() {
+        let mut s = AppState::default();
+        s.instances = vec![{
+            let mut r = row("alpha"); r.pg_version = 17; r
+        }];
+        let mut f = TextField::default();
+        for c in "18".chars() { f.insert_char(c); }
+        s.modal = Some(Modal::UpgradeTo { source: "alpha".into(), input: f });
+        s.apply_event(key(KeyCode::Enter));
+        assert!(matches!(s.modal, Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Upgrade { ref name, to: 18 }, ..
+        }) if name == "alpha"));
+    }
+
+    #[test]
+    fn upgrade_to_smaller_version_rejects() {
+        let mut s = AppState::default();
+        s.instances = vec![{ let mut r = row("alpha"); r.pg_version = 18; r }];
+        let mut f = TextField::default();
+        f.insert_char('1'); f.insert_char('7');
+        s.modal = Some(Modal::UpgradeTo { source: "alpha".into(), input: f });
+        s.apply_event(key(KeyCode::Enter));
+        assert!(matches!(s.modal, Some(Modal::UpgradeTo { .. })), "modal stays open");
+        assert!(s.last_op_error.is_some());
+    }
+
+    #[test]
+    fn restore_as_with_no_target_time_transitions_to_confirm() {
+        let mut s = AppState::default();
+        let mut a = TextField::default();
+        for c in "gamma".chars() { a.insert_char(c); }
+        s.modal = Some(Modal::RestoreAs {
+            source: "alpha".into(),
+            as_input: a,
+            target_time: TextField::default(),
+            focus: 0,
+        });
+        s.apply_event(key(KeyCode::Enter));
+        assert!(matches!(s.modal, Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Restore { ref source, ref as_, target_time: None }, ..
+        }) if source == "alpha" && as_ == "gamma"));
+    }
+
+    // --- Task 3.5: Confirm modal — y/n dispatch ---
+
+    #[test]
+    fn confirm_yes_for_rotate_enqueues_op() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Rotate { name: "alpha".into() },
+            prompt: "...".into(),
+        });
+        s.apply_event(key(KeyCode::Char('y')));
+        assert!(s.modal.is_none());
+        assert_eq!(s.pending_ops, vec![("alpha".into(), OpKind::Rotate)]);
+    }
+
+    #[test]
+    fn confirm_no_closes_modal_no_op() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Rotate { name: "alpha".into() },
+            prompt: "...".into(),
+        });
+        s.apply_event(key(KeyCode::Char('n')));
+        assert!(s.modal.is_none());
+        assert!(s.pending_ops.is_empty());
+    }
+
+    #[test]
+    fn confirm_yes_for_upgrade_enqueues_op_with_to_version() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Upgrade { name: "alpha".into(), to: 18 },
+            prompt: "...".into(),
+        });
+        s.apply_event(key(KeyCode::Char('y')));
+        assert_eq!(s.pending_ops, vec![("alpha@18".into(), OpKind::Upgrade)]);
+    }
+
+    #[test]
+    fn confirm_yes_for_restore_encodes_source_as_target_time() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Restore {
+                source: "alpha".into(), as_: "gamma".into(), target_time: None,
+            },
+            prompt: "...".into(),
+        });
+        s.apply_event(key(KeyCode::Char('y')));
+        assert_eq!(s.pending_ops, vec![("alpha:gamma".into(), OpKind::Restore)]);
+    }
+
+    #[test]
+    fn confirm_yes_for_restore_with_target_time() {
+        let mut s = AppState::default();
+        s.modal = Some(Modal::Confirm {
+            kind: PendingDestructiveOp::Restore {
+                source: "alpha".into(), as_: "gamma".into(),
+                target_time: Some("2026-05-12T10:00:00Z".into()),
+            },
+            prompt: "...".into(),
+        });
+        s.apply_event(key(KeyCode::Char('y')));
+        assert_eq!(s.pending_ops, vec![("alpha:gamma@2026-05-12T10:00:00Z".into(), OpKind::Restore)]);
     }
 }
