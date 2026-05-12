@@ -58,3 +58,11 @@ fn upgrade_entrypoint_does_not_link_files() {
     let s = generate_upgrade_entrypoint(17, 18);
     assert!(!s.contains("--link"), "must NOT use --link, breaks rollback");
 }
+
+#[test]
+fn ensures_new_pgdata_exists_before_chown() {
+    let s = generate_upgrade_entrypoint(17, 18);
+    let mkdir_idx = s.find("mkdir -p \"$NEW_PGDATA\"").expect("mkdir missing");
+    let chown_idx = s.find("chown -R postgres:postgres \"$NEW_PGDATA\"").expect("chown missing");
+    assert!(mkdir_idx < chown_idx, "mkdir must precede chown");
+}

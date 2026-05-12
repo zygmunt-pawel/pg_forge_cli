@@ -28,6 +28,7 @@ MARKER="$NEW_PGDATA/.pgforge-upgrade-complete"
 
 # Old PGDATA must NOT be in-use (caller stopped and removed the old container
 # before scheduling this upgrade). pg_upgrade refuses otherwise.
+mkdir -p "$NEW_PGDATA"
 chown -R postgres:postgres "$NEW_PGDATA"
 chmod 0700 "$NEW_PGDATA"
 
