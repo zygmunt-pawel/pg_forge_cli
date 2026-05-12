@@ -5,8 +5,9 @@
 //! Workflow:
 //!   1. Load state.toml; require `to > from` and a sensible version range.
 //!   2. If backup_enabled, take a labeled pre-upgrade snapshot.
-//!   3. Stop + remove the running container (volume retained for rollback).
-//!   4. Build `pgforge/upgrade:<from>-to-<to>` image (both PG bins + pgbackrest).
+//!   3. Build `pgforge/upgrade:<from>-to-<to>` image (both PG bins + pgbackrest).
+//!      If this fails the running container is untouched and state.toml unchanged.
+//!   4. Stop + remove the running container (volume retained for rollback).
 //!   5. Create a fresh volume `pgforge_data_<name>_v<to>` for the upgraded
 //!      cluster.
 //!   6. Run a one-shot upgrade container:
@@ -100,15 +101,9 @@ pub async fn run_with_engine<E: DockerEngine>(
         .await?;
     }
 
-    // 3. Stop + remove old container (keep volume).
-    if docker.container_running(&container_name).await? {
-        docker.stop_container(&container_name).await?;
-    }
-    if docker.container_exists(&container_name).await? {
-        docker.remove_container(&container_name, true).await?;
-    }
-
-    // 4. Build upgrade image with BOTH PG versions.
+    // 3. Build upgrade image with BOTH PG versions BEFORE touching the running
+    // container. If this fails (network, disk, Dockerfile bug) the old
+    // container is still running and state.toml is unchanged.
     let upgrade_image = format!("pgforge/upgrade:{from_ver}-to-{to_ver}");
     docker
         .build_image(&BuildImageSpec {
@@ -116,6 +111,15 @@ pub async fn run_with_engine<E: DockerEngine>(
             dockerfile: upgrade_dockerfile(from_ver, to_ver),
         })
         .await?;
+
+    // 4. Stop + remove old container (keep volume). Only reached if build
+    // succeeded, so the instance is never left in a half-torn-down state.
+    if docker.container_running(&container_name).await? {
+        docker.stop_container(&container_name).await?;
+    }
+    if docker.container_exists(&container_name).await? {
+        docker.remove_container(&container_name, true).await?;
+    }
 
     // 5. Write the upgrade entrypoint script to a host path so it can be
     // bind-mounted (executable bit set).
