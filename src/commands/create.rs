@@ -69,8 +69,9 @@ pub async fn run(args: CreateArgs) -> Result<InstanceState> {
     } else {
         Some(global_cfg.s3.clone().ok_or_else(|| {
             PgForgeError::Anyhow(anyhow::anyhow!(
-                "S3 settings missing in global config (~/.config/pgforge/config.toml). \
-                 Add an [s3] section, or use --no-backup for a local-only instance."
+                "S3 settings missing in global config ({}). \
+                 Add an [s3] section, or use --no-backup for a local-only instance.",
+                crate::config::global::GlobalConfig::default_path().display()
             ))
         })?)
     };

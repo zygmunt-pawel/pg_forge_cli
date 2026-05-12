@@ -101,7 +101,7 @@ Only needed if you're developing on pgforge itself.
 
 1. Install pgforge (see above) and start your Docker engine.
 2. Configure S3 credentials. Create `~/.config/pgforge/config.toml` (Linux) or
-   `~/Library/Application Support/pgforge/config.toml` (macOS):
+   `~/Library/Application Support/dev.pgforge.pgforge/config.toml` (macOS):
    ```toml
    port_range_start = 5433
    port_range_end = 5500
