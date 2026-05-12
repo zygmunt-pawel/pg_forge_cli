@@ -54,6 +54,16 @@ TUI dashboard comes in Plan 5.
    ```
    (The port is printed at the end of `create` and saved in `~/.local/share/pgforge/instances/billing/state.toml`.)
 
+## TUI mode
+
+`pgforge` with no subcommand launches an interactive dashboard
+(ratatui). Keybinds:
+
+- `↑`/`↓` or `j`/`k` — navigate instance list
+- `s` snapshot · `c` clone · `R` rotate · `u` upgrade · `r` restore
+- `Enter` — copy connection string (with password) to clipboard
+- `e` — full snapshot list · `?` — error detail · `q` quit
+
 ## Day-2 operations
 
 ```bash
