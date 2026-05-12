@@ -1,4 +1,4 @@
-use pgforge::util::fs::{create_secret_dir, write_secret};
+use pgforge::util::fs::{atomic_write, create_secret_dir, write_secret};
 
 #[test]
 fn write_secret_sets_mode_0600_on_unix() {
@@ -58,4 +58,34 @@ fn write_secret_overwrites_existing_file_and_resets_mode() {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "must reset mode to 0600 on overwrite, got {mode:o}");
     }
+}
+
+#[test]
+fn atomic_write_creates_file_with_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("sub").join("a.toml");
+    atomic_write(&p, b"hello").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"hello");
+}
+
+#[test]
+fn atomic_write_overwrites_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.toml");
+    std::fs::write(&p, b"old").unwrap();
+    atomic_write(&p, b"new").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"new");
+}
+
+#[test]
+fn atomic_write_leaves_no_tmp_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.toml");
+    atomic_write(&p, b"x").unwrap();
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != std::ffi::OsString::from("a.toml"))
+        .collect();
+    assert!(leftovers.is_empty(), "found: {:?}", leftovers);
 }
