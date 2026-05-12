@@ -139,7 +139,7 @@ pub enum PendingDestructiveOp {
 pub enum Modal {
     CloneAs { source: String, input: TextField },
     UpgradeTo { source: String, input: TextField },
-    RestoreAs { source: String, as_input: TextField, target_time: TextField, focus: u8 },
+    RestoreAs { source: String, as_input: TextField, minutes_ago: u32, focus: u8 },
     Confirm { kind: PendingDestructiveOp, prompt: String },
     Snapshots { name: String, view: SnapshotsView },
     ErrorDetail { msg: String },

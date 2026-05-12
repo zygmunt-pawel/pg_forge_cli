@@ -24,7 +24,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     match modal {
         Modal::CloneAs { source, input } => single_input(f, area, &format!("Clone {source} as"), &input.buf, input.cursor),
         Modal::UpgradeTo { source, input } => single_input(f, area, &format!("Upgrade {source} — target version"), &input.buf, input.cursor),
-        Modal::RestoreAs { source, as_input, target_time, focus } => {
+        Modal::RestoreAs { source, as_input, minutes_ago, focus } => {
             let block = Block::default().title(format!(" Restore {source} ")).borders(Borders::ALL);
             f.render_widget(block, area);
             let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
@@ -32,20 +32,51 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 .constraints([Constraint::Length(2), Constraint::Length(2), Constraint::Min(1)])
                 .split(inner);
             f.render_widget(field_para("New instance name:", &as_input.buf, *focus == 0), chunks[0]);
-            f.render_widget(field_para("Target time (RFC3339, optional):", &target_time.buf, *focus == 1), chunks[1]);
+            // Resolve "N min ago" to a wall-clock UTC stamp users can sanity-check.
+            let (minutes_label, abs) = if *minutes_ago == 0 {
+                ("latest archived WAL".to_string(), "(no target time)".to_string())
+            } else {
+                let delta = jiff::SignedDuration::from_secs((*minutes_ago as i64) * 60);
+                let t = jiff::Timestamp::now() - delta;
+                (format!("{} min ago", minutes_ago), t.to_string())
+            };
             f.render_widget(
-                Paragraph::new("[Tab] switch field   [Enter] continue   [Esc] cancel")
-                    .style(Style::default().fg(Color::DarkGray)),
+                cycle_para(
+                    "Restore to (← →):",
+                    &format!("{minutes_label}   →   {abs}"),
+                    *focus == 1,
+                ),
+                chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("[Tab]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" switch field   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[← →]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" ±1 min   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[Space]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" +5 min   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("digits", Style::default().fg(Color::Cyan)),
+                        Span::styled(" type minutes", Style::default().fg(Color::DarkGray)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("[Enter]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" continue   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                    ]),
+                ]),
                 chunks[2],
             );
-            // Place caret on the focused field. See Modal::Create arm for the same idiom.
-            let (field, idx) = if *focus == 0 { (as_input, 0usize) } else { (target_time, 1usize) };
-            let chunk = chunks[idx];
-            let visual_col = field.buf[..field.cursor].chars().count() as u16;
-            f.set_cursor_position(ratatui::layout::Position {
-                x: chunk.x + 2 + visual_col,
-                y: chunk.y + 1,
-            });
+            // Caret only on the text field; minutes-ago picker is a number cycler.
+            if *focus == 0 {
+                let visual_col = as_input.buf[..as_input.cursor].chars().count() as u16;
+                f.set_cursor_position(ratatui::layout::Position {
+                    x: chunks[0].x + 2 + visual_col,
+                    y: chunks[0].y + 1,
+                });
+            }
         }
         Modal::Confirm { prompt, .. } => {
             let block = Block::default().title(" Confirm ").borders(Borders::ALL);

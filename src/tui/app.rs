@@ -263,7 +263,9 @@ impl AppState {
                     self.modal = Some(Modal::RestoreAs {
                         source: n,
                         as_input: TextField::default(),
-                        target_time: TextField::default(),
+                        // 0 = "latest archived WAL" (no --target-time at all).
+                        // Arrow keys bump this in 1-minute steps.
+                        minutes_ago: 0,
                         focus: 0,
                     });
                 }
@@ -358,26 +360,33 @@ impl AppState {
                 KeyCode::Enter => Action::Submit,
                 _ => Action::Nothing,
             },
-            Some(Modal::RestoreAs { as_input, target_time, focus, .. }) => match k.code {
+            Some(Modal::RestoreAs { as_input, minutes_ago, focus, .. }) => match k.code {
                 KeyCode::Tab => { *focus = (*focus + 1) % 2; Action::Nothing }
-                KeyCode::Char(c) if !c.is_control() => {
-                    if *focus == 0 { as_input.insert_char(c); } else { target_time.insert_char(c); }
-                    Action::Nothing
-                }
-                KeyCode::Backspace => {
-                    if *focus == 0 { as_input.backspace(); } else { target_time.backspace(); }
-                    Action::Nothing
-                }
-                KeyCode::Left => {
-                    if *focus == 0 { as_input.move_left(); } else { target_time.move_left(); }
-                    Action::Nothing
-                }
-                KeyCode::Right => {
-                    if *focus == 0 { as_input.move_right(); } else { target_time.move_right(); }
-                    Action::Nothing
-                }
                 KeyCode::Enter => Action::Submit,
-                _ => Action::Nothing,
+                _ if *focus == 0 => match k.code {
+                    KeyCode::Char(c) if !c.is_control() => { as_input.insert_char(c); Action::Nothing }
+                    KeyCode::Backspace => { as_input.backspace(); Action::Nothing }
+                    KeyCode::Left  => { as_input.move_left();  Action::Nothing }
+                    KeyCode::Right => { as_input.move_right(); Action::Nothing }
+                    _ => Action::Nothing,
+                },
+                // focus == 1: minutes_ago picker. ← decrements (saturating
+                // at 0 = "latest"), → increments. Space cycles forward in
+                // bigger steps; digit keys jump by powers of 10 for fast
+                // back-in-time navigation.
+                _ => match k.code {
+                    KeyCode::Left  => { *minutes_ago = minutes_ago.saturating_sub(1); Action::Nothing }
+                    KeyCode::Right => { *minutes_ago = minutes_ago.saturating_add(1); Action::Nothing }
+                    KeyCode::Char(' ') => { *minutes_ago = minutes_ago.saturating_add(5); Action::Nothing }
+                    KeyCode::Backspace => { *minutes_ago /= 10; Action::Nothing }
+                    KeyCode::Char(d) if d.is_ascii_digit() => {
+                        let v = d.to_digit(10).unwrap();
+                        // Append digit (like an old-school numeric input).
+                        *minutes_ago = minutes_ago.saturating_mul(10).saturating_add(v);
+                        Action::Nothing
+                    }
+                    _ => Action::Nothing,
+                }
             },
             Some(Modal::Confirm { kind, prompt }) => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => Action::ConfirmYes,
@@ -480,7 +489,6 @@ impl AppState {
     }
 
     fn submit_modal(&mut self) {
-        use std::str::FromStr;
         let taken = self.modal.take();
         match taken {
             Some(Modal::CloneAs { source, input }) => {
@@ -524,29 +532,36 @@ impl AppState {
                     }
                 }
             }
-            Some(Modal::RestoreAs { source, as_input, target_time, focus }) => {
+            Some(Modal::RestoreAs { source, as_input, minutes_ago, focus }) => {
                 let as_ = as_input.buf.clone();
-                let tt = if target_time.buf.is_empty() { None } else { Some(target_time.buf.clone()) };
                 if let Err(msg) = validate_instance_name(&as_) {
                     self.last_op_error = Some(OpError {
                         instance: source.clone(), kind: OpKind::Restore, msg, at: Instant::now(),
                     });
-                    self.modal = Some(Modal::RestoreAs { source, as_input, target_time, focus });
+                    self.modal = Some(Modal::RestoreAs { source, as_input, minutes_ago, focus });
                     return;
                 }
-                if let Some(ref ts) = tt {
-                    if let Err(e) = <jiff::Timestamp as FromStr>::from_str(ts) {
-                        self.last_op_error = Some(OpError {
-                            instance: source.clone(), kind: OpKind::Restore,
-                            msg: format!("invalid target_time RFC3339: {e}"), at: Instant::now(),
-                        });
-                        self.modal = Some(Modal::RestoreAs { source, as_input, target_time, focus });
-                        return;
-                    }
-                }
+                // 0 = "latest archived WAL" — no --target-time. Else compute
+                // an absolute timestamp by subtracting from now() and feed it
+                // to pgbackrest as RFC3339.
+                let tt = if minutes_ago == 0 {
+                    None
+                } else {
+                    let delta = jiff::SignedDuration::from_secs((minutes_ago as i64) * 60);
+                    let target = jiff::Timestamp::now() - delta;
+                    Some(target.to_string())
+                };
+                let target_display = match &tt {
+                    Some(t) => format!("at {t}"),
+                    None    => "at latest archived WAL".to_string(),
+                };
                 self.modal = Some(Modal::Confirm {
-                    kind: PendingDestructiveOp::Restore { source: source.clone(), as_: as_.clone(), target_time: tt },
-                    prompt: format!("Restore {source} → new instance {as_}? Takes minutes."),
+                    kind: PendingDestructiveOp::Restore {
+                        source: source.clone(),
+                        as_: as_.clone(),
+                        target_time: tt,
+                    },
+                    prompt: format!("Restore {source} → new instance {as_} {target_display}? Takes minutes."),
                 });
             }
             Some(Modal::Create {
@@ -1155,20 +1170,39 @@ mod tests {
     }
 
     #[test]
-    fn restore_as_with_no_target_time_transitions_to_confirm() {
+    fn restore_as_minutes_ago_zero_means_latest() {
         let mut s = AppState::default();
         let mut a = TextField::default();
         for c in "gamma".chars() { a.insert_char(c); }
         s.modal = Some(Modal::RestoreAs {
             source: "alpha".into(),
             as_input: a,
-            target_time: TextField::default(),
+            minutes_ago: 0,
             focus: 0,
         });
         s.apply_event(key(KeyCode::Enter));
         assert!(matches!(s.modal, Some(Modal::Confirm {
             kind: PendingDestructiveOp::Restore { ref source, ref as_, target_time: None }, ..
         }) if source == "alpha" && as_ == "gamma"));
+    }
+
+    #[test]
+    fn restore_as_minutes_ago_nonzero_produces_target_timestamp() {
+        let mut s = AppState::default();
+        let mut a = TextField::default();
+        for c in "gamma".chars() { a.insert_char(c); }
+        s.modal = Some(Modal::RestoreAs {
+            source: "alpha".into(),
+            as_input: a,
+            minutes_ago: 5,
+            focus: 0,
+        });
+        s.apply_event(key(KeyCode::Enter));
+        let Some(Modal::Confirm { kind: PendingDestructiveOp::Restore { target_time, .. }, .. }) = &s.modal
+            else { panic!("not in Confirm"); };
+        let ts = target_time.as_ref().expect("target_time set");
+        // RFC3339-ish — contains a `T` and ends with `Z` or `+...`.
+        assert!(ts.contains('T'));
     }
 
     // --- Task 3.5: Confirm modal — y/n dispatch ---
