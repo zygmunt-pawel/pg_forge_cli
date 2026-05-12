@@ -192,7 +192,7 @@ impl DockerEngine for BollardEngine {
             port_bindings: Some(port_bindings),
             mounts: Some(mounts),
             memory: Some((spec.memory_mb as i64) * 1024 * 1024),
-            memory_swap: Some((spec.memory_mb as i64) * 1024 * 1024),
+            memory_swap: None,
             shm_size: Some((spec.shm_size_mb as i64) * 1024 * 1024),
             network_mode: Some(spec.network.clone()),
             restart_policy: Some(BollardRestartPolicy {
