@@ -173,6 +173,9 @@ mod tests {
             self.ops.lock().unwrap().push(format!("rm_volume({name})"));
             Ok(())
         }
+        async fn inspect_container(&self, _name: &str) -> Result<crate::docker::engine::ContainerInspect> {
+            Ok(crate::docker::engine::ContainerInspect::default())
+        }
     }
 
     fn write_state(state_root: &std::path::Path, name: &str, backup_enabled: bool) {

@@ -27,6 +27,9 @@ fn render_running_instance_with_full_metrics() {
         connections_total: Some(7),
         db_size_bytes: Some(1_234_567),
         pgdata_bytes: Some(50_000_000),
+        uptime_seconds: Some(125),
+        restart_count: Some(0),
+        db_responsive: Some(true),
     });
     assert!(s.contains("State: running"));
     assert!(s.contains("CPU:"));
@@ -35,6 +38,8 @@ fn render_running_instance_with_full_metrics() {
     assert!(s.contains("2 active, 5 idle, 7 total"));
     assert!(s.contains("DB:"));
     assert!(s.contains("PGDATA:"));
+    assert!(s.contains("Uptime:"));
+    assert!(s.contains("responsive ✓"));
 }
 
 #[test]
@@ -53,6 +58,9 @@ fn render_running_instance_with_partial_metrics() {
         connections_total: Some(0),
         db_size_bytes: Some(1024),
         pgdata_bytes: None,
+        uptime_seconds: None,
+        restart_count: None,
+        db_responsive: Some(true),
     });
     assert!(s.contains("State: running"));
     assert!(!s.contains("CPU:"));

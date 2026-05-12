@@ -5,12 +5,22 @@
 use crate::commands::ls::InstanceSummary;
 use crate::commands::status::InstanceStatus;
 use crate::tui::events::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
+
+/// Number of CPU samples to keep per instance for the sparkline. At
+/// 2s per status_poller tick this is 60s of history — enough to see
+/// short-term spikes without bloating memory.
+pub const CPU_HISTORY_LEN: usize = 30;
 
 pub struct AppState {
     pub instances: Vec<InstanceSummary>,
     pub statuses: HashMap<String, InstanceStatus>,
+    /// Recent CPU% samples per instance — newest on the back. Updated
+    /// by `apply_event(StatusRefreshed)`; clamped to CPU_HISTORY_LEN.
+    /// Stored as u64 (× 10 for one decimal of precision) because that's
+    /// what ratatui::Sparkline takes; render divides by 10.
+    pub cpu_history: HashMap<String, VecDeque<u64>>,
     pub snapshots: HashMap<String, SnapshotsView>,
     pub in_progress: HashMap<String, RunningOp>,
     pub selected: usize,
@@ -53,6 +63,7 @@ impl Default for AppState {
             refresh_requests: Vec::new(),
             pending_creates: Vec::new(),
             pending_show_created: Vec::new(),
+            cpu_history: HashMap::new(),
         }
     }
 }
@@ -89,6 +100,26 @@ impl AppState {
             }
             Event::StatusRefreshed { name, status } => {
                 self.stale_status.remove(&name);
+                // Heartbeat detection: previous run was up, this one is
+                // down → loud flash so user notices the crash even if
+                // they're not looking at the right pane.
+                let prev_running = self.statuses.get(&name).map(|s| s.running).unwrap_or(false);
+                if prev_running && !status.running {
+                    self.last_op_error = Some(OpError {
+                        instance: name.clone(),
+                        kind: OpKind::Snapshot, // placeholder; no dedicated Watchdog kind
+                        msg: format!("{name} went down (container is no longer running)"),
+                        at: Instant::now(),
+                    });
+                }
+                // Sparkline history — append latest CPU sample, drop oldest
+                // beyond CPU_HISTORY_LEN. Store stopped instances as 0
+                // so the chart doesn't go blank during transient
+                // restarts.
+                let sample = status.cpu_percent.map(|p| (p * 10.0) as u64).unwrap_or(0);
+                let hist = self.cpu_history.entry(name.clone()).or_default();
+                hist.push_back(sample);
+                while hist.len() > CPU_HISTORY_LEN { hist.pop_front(); }
                 self.statuses.insert(name, status);
             }
             Event::SnapshotsRefreshed { name, view } => {

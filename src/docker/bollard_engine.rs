@@ -421,4 +421,27 @@ impl DockerEngine for BollardEngine {
             ))),
         }
     }
+
+    async fn inspect_container(
+        &self,
+        name: &str,
+    ) -> Result<crate::docker::engine::ContainerInspect> {
+        use crate::docker::engine::ContainerInspect;
+        match self.docker.inspect_container(name, None).await {
+            Ok(insp) => {
+                let state = insp.state.as_ref();
+                Ok(ContainerInspect {
+                    running: state.and_then(|s| s.running).unwrap_or(false),
+                    started_at: state.and_then(|s| s.started_at.clone()),
+                    restart_count: insp.restart_count.unwrap_or(0).max(0) as u32,
+                })
+            }
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(ContainerInspect::default()),
+            Err(e) => Err(PgForgeError::Docker(format!(
+                "inspect_container({name}): {e}"
+            ))),
+        }
+    }
 }

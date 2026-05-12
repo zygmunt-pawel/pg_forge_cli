@@ -397,6 +397,9 @@ mod tests {
             self.calls.lock().unwrap().push("remove_volume");
             Ok(())
         }
+        async fn inspect_container(&self, _name: &str) -> crate::error::Result<crate::docker::engine::ContainerInspect> {
+            Ok(crate::docker::engine::ContainerInspect::default())
+        }
     }
 
     #[tokio::test]

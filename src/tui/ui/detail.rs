@@ -3,10 +3,10 @@
 
 use crate::tui::app::AppState;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Sparkline, Wrap};
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::ALL);
@@ -26,9 +26,24 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                      else            { Span::styled("○ stopped", Style::default().fg(Color::DarkGray)) };
     lines.push(Line::from(vec![
         Span::styled(inst.name.clone(), Style::default().fg(Color::Cyan)),
-        Span::raw(format!("  PG{} {} :{}  ", inst.pg_version, inst.preset_label, inst.host_port)),
+        Span::raw(format!("  PG{}  :{}  ", inst.pg_version, inst.host_port)),
         header_dot,
     ]));
+    // Preset summary — spell out RAM / max_connections / shared_buffers
+    // so the user doesn't have to look up what `medium` means.
+    if let Some(preset) = parse_preset(&inst.preset_label) {
+        let t = preset.tuning();
+        lines.push(Line::styled(
+            format!(
+                "Preset: {} — {}GB RAM · {} conn · {}MB shared_buffers",
+                inst.preset_label,
+                t.ram_mb / 1024,
+                t.max_connections,
+                t.shared_buffers_mb,
+            ),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
     lines.push(Line::raw(""));
 
     let stale = state.stale_status.contains(&inst.name);
@@ -47,6 +62,26 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         if let Some(b) = s.pgdata_bytes {
             lines.push(Line::raw(format!("PGDATA: {}", human_bytes(b))));
         }
+        // Heartbeat / uptime row.
+        let mut hb: Vec<Span> = Vec::new();
+        if let Some(up) = s.uptime_seconds {
+            hb.push(Span::raw(format!("Uptime: {}", crate::commands::status::humanize_uptime(up))));
+        }
+        if let Some(rc) = s.restart_count {
+            if rc > 0 {
+                if !hb.is_empty() { hb.push(Span::raw("   ")); }
+                hb.push(Span::styled(format!("Restarts: {rc}"), Style::default().fg(Color::Yellow)));
+            }
+        }
+        if let Some(resp) = s.db_responsive {
+            if !hb.is_empty() { hb.push(Span::raw("   ")); }
+            if resp {
+                hb.push(Span::styled("DB ✓ responsive", Style::default().fg(Color::Green)));
+            } else {
+                hb.push(Span::styled("DB ✗ not responding", Style::default().fg(Color::Red)));
+            }
+        }
+        if !hb.is_empty() { lines.push(Line::from(hb)); }
     } else {
         lines.push(Line::styled("(no status yet)", Style::default().fg(Color::DarkGray)));
     }
@@ -67,7 +102,43 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         }
     }
 
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    // Split inner: text on top, 2-row sparkline at the bottom.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(inner);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
+
+    // CPU sparkline — last ~60s of samples for the selected instance.
+    let hist: Vec<u64> = state
+        .cpu_history
+        .get(&inst.name)
+        .map(|v| v.iter().copied().collect())
+        .unwrap_or_default();
+    if !hist.is_empty() {
+        let max_sample = hist.iter().copied().max().unwrap_or(1000).max(100);
+        let spark = Sparkline::default()
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .title(Line::from(vec![
+                        Span::styled(" CPU last ~60s ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("max {:.1}%", (max_sample as f64) / 10.0),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])),
+            )
+            .data(&hist[..])
+            .max(max_sample)
+            .style(Style::default().fg(Color::Cyan));
+        f.render_widget(spark, chunks[1]);
+    }
+}
+
+fn parse_preset(label: &str) -> Option<crate::domain::preset::Preset> {
+    use std::str::FromStr;
+    crate::domain::preset::Preset::from_str(label).ok()
 }
 
 fn human_bytes(b: u64) -> String {

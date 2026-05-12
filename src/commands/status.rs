@@ -35,6 +35,19 @@ pub struct InstanceStatus {
     pub db_size_bytes: Option<u64>,
     /// On-disk size of $PGDATA inside the container (via `du -sb`).
     pub pgdata_bytes: Option<u64>,
+    /// Seconds since the *current* container run started. None when the
+    /// container isn't running or `docker inspect` couldn't parse
+    /// State.StartedAt. Use `humanize_uptime` for display.
+    pub uptime_seconds: Option<u64>,
+    /// How many times the Docker restart policy has had to relaunch
+    /// this container since first create. >0 = it crashed at least
+    /// once and was recovered automatically — a soft warning signal.
+    pub restart_count: Option<u32>,
+    /// True iff postgres responded to a SELECT within this status
+    /// refresh (i.e. `connections_total` was populated). When the
+    /// container is running but this is `Some(false)`, postgres is
+    /// not yet reachable (still booting, or hung).
+    pub db_responsive: Option<bool>,
 }
 
 pub async fn run(args: StatusArgs) -> Result<InstanceStatus> {
@@ -59,7 +72,14 @@ pub async fn run_with_engine<E: DockerEngine>(
         host_port: state.instance.host_port,
         ..Default::default()
     };
-    out.running = docker.container_running(&container).await?;
+    let inspect = docker.inspect_container(&container).await?;
+    out.running = inspect.running;
+    out.restart_count = Some(inspect.restart_count);
+    if out.running {
+        if let Some(ref ts) = inspect.started_at {
+            out.uptime_seconds = parse_rfc3339_uptime_secs(ts);
+        }
+    }
     if !out.running {
         return Ok(out);
     }
@@ -102,6 +122,11 @@ pub async fn run_with_engine<E: DockerEngine>(
             out.connections_total = fields[2].parse().ok();
         }
     }
+    // db_responsive is the "did the SELECT come back?" signal — container
+    // running != postgres ready (post-restart it can take seconds to
+    // accept connections; if pg crashed inside the container it can
+    // stay down indefinitely).
+    out.db_responsive = Some(out.connections_total.is_some());
 
     // 3. Database size.
     let pgsql_size = docker
@@ -210,7 +235,50 @@ pub fn render(status: &InstanceStatus) -> String {
     if let Some(pg) = status.pgdata_bytes {
         s.push_str(&format!("PGDATA: {} ({pg} B)\n", human_bytes(pg)));
     }
+    if let Some(up) = status.uptime_seconds {
+        s.push_str(&format!("Uptime: {}\n", humanize_uptime(up)));
+    }
+    if let Some(rc) = status.restart_count {
+        if rc > 0 {
+            s.push_str(&format!("Restarts: {rc} (container crashed and was auto-restarted)\n"));
+        }
+    }
+    if let Some(resp) = status.db_responsive {
+        s.push_str(&format!(
+            "DB:     {}\n",
+            if resp { "responsive ✓" } else { "container up, postgres not responding ✗" }
+        ));
+    }
     s
+}
+
+/// Parse Docker's RFC3339 `started_at` into seconds-since-now using a
+/// small bespoke parser. We avoid pulling chrono — jiff is already a
+/// dependency and handles fractional seconds + `Z` / `+00:00` offsets.
+pub(crate) fn parse_rfc3339_uptime_secs(s: &str) -> Option<u64> {
+    use std::str::FromStr;
+    let started = <jiff::Timestamp as FromStr>::from_str(s).ok()?;
+    let now = jiff::Timestamp::now();
+    let secs = started.duration_until(now).as_secs();
+    if secs < 0 { Some(0) } else { Some(secs as u64) }
+}
+
+/// "5s", "2m", "1h 14m", "3d 4h", "12d". Tweaked for at-a-glance
+/// reading in the TUI detail pane — never shows more than two units.
+pub fn humanize_uptime(secs: u64) -> String {
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if d > 0 {
+        if h > 0 { format!("{d}d {h}h") } else { format!("{d}d") }
+    } else if h > 0 {
+        if m > 0 { format!("{h}h {m}m") } else { format!("{h}h") }
+    } else if m > 0 {
+        if s > 0 { format!("{m}m {s}s") } else { format!("{m}m") }
+    } else {
+        format!("{s}s")
+    }
 }
 
 fn human_bytes(b: u64) -> String {

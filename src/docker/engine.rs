@@ -95,4 +95,21 @@ pub trait DockerEngine: Send + Sync {
 
     /// Remove a named volume. Idempotent: no-op if the volume doesn't exist.
     async fn remove_volume(&self, name: &str) -> Result<()>;
+
+    /// Pull selected fields from `docker inspect` for liveness watching.
+    /// `started_at` is the RFC3339 stamp of the current run; `restart_count`
+    /// is how many times the restart policy has had to relaunch the
+    /// container since it was first created (so > 0 implies the container
+    /// has crashed at least once and Docker recovered it).
+    async fn inspect_container(&self, name: &str) -> Result<ContainerInspect>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ContainerInspect {
+    pub running: bool,
+    /// RFC3339 timestamp the *current* run started at; for currently-running
+    /// containers this is also "uptime origin". For stopped containers it's
+    /// when the last run started — meaningless for "how long has been up".
+    pub started_at: Option<String>,
+    pub restart_count: u32,
 }

@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
     let two = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(36), Constraint::Min(1)])
+        .constraints([Constraint::Length(42), Constraint::Min(1)])
         .split(main);
     list::render(f, two[0], state);
     detail::render(f, two[1], state);
