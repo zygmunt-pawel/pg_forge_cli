@@ -43,12 +43,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Supported postgres major versions for pg_upgrade. Lower bound: oldest
-/// version still in pgdg apt. Upper bound: newest at time of writing.
-/// Outside this range we refuse — pgdg may not have packages, or the
-/// upgrade path isn't tested.
-pub const MIN_SUPPORTED_PG_VERSION: u8 = 13;
-pub const MAX_SUPPORTED_PG_VERSION: u8 = 19;
+// No min/max supported version range — pgforge accepts whatever version
+// pgdg apt has packages for. The user is in charge of picking a sane pair.
 
 #[derive(Debug, Clone)]
 pub struct UpgradeArgs {
@@ -78,20 +74,10 @@ pub async fn run_with_engine<E: DockerEngine>(
     let from_ver = state.instance.pg_version;
     let to_ver = args.to_version;
 
-    // 1. Sanity checks.
+    // Sanity check — pg_upgrade refuses downgrades and same-version "upgrades".
     if to_ver <= from_ver {
         return Err(PgForgeError::Anyhow(anyhow::anyhow!(
             "target version {to_ver} must be greater than current version {from_ver}"
-        )));
-    }
-    if !(MIN_SUPPORTED_PG_VERSION..=MAX_SUPPORTED_PG_VERSION).contains(&to_ver) {
-        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
-            "target version {to_ver} outside supported range {MIN_SUPPORTED_PG_VERSION}..={MAX_SUPPORTED_PG_VERSION}"
-        )));
-    }
-    if !(MIN_SUPPORTED_PG_VERSION..=MAX_SUPPORTED_PG_VERSION).contains(&from_ver) {
-        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
-            "current version {from_ver} outside supported range; upgrade not attempted"
         )));
     }
 

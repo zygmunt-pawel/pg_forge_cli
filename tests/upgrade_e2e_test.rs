@@ -1,5 +1,10 @@
 //! E2E for `pgforge upgrade`. Builds a 17→18 upgrade against real Docker.
 //! Gated by PGFORGE_E2E=1; uses --no-backup so no S3 is required.
+//!
+//! Why 17→18 specifically: pgdg hasn't published `postgresql-19` as of
+//! 2026-05, so the highest version we can install is 18. The test pair
+//! just needs `to > from` to exercise the upgrade machinery — switch to
+//! 18→19 once pgdg ships pg 19.
 
 use pgforge::commands::create::{CreateArgs, run_with_engine as create_run};
 use pgforge::commands::upgrade::{UpgradeArgs, run_with_engine as upgrade_run};
