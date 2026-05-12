@@ -10,79 +10,80 @@ ratatui TUI dashboard. 150 unit tests green.
 
 ## Install
 
-Two things on the target Mac: the `pgforge` binary and a Docker engine.
+Two things on the target Mac: a headless Docker engine and the `pgforge`
+binary. Both can be installed and operated entirely over SSH — no GUI
+session required. Verified end-to-end on a clean Mac mini (Apple Silicon,
+macOS 26).
 
-### 1. OrbStack (Docker engine)
+### 1. Docker engine — Colima (headless, recommended for Mac mini servers)
 
-[OrbStack](https://orbstack.dev) is recommended — significantly faster and
-lighter than Docker Desktop on macOS, free for personal use.
-
-**Step 1 — Install** (terminal, can be done over SSH):
-```bash
-brew install --cask orbstack
-```
-
-**Step 2 — First launch (requires the desktop GUI, NOT SSH-only).**
-OrbStack's first run installs a privileged helper, accepts a Gatekeeper
-prompt, and on Apple Silicon also installs Rosetta. All three need an
-active GUI session — you can't bootstrap it over SSH. Sit at the Mac (or
-use Screen Sharing) and run:
+[Colima](https://github.com/abiosoft/colima) drives Docker through Apple's
+native Virtualization framework. Unlike OrbStack or Docker Desktop, it has
+no GUI app, no Gatekeeper dance, no Rosetta install prompt — pure CLI, runs
+on a freshly-installed Mac mini you've never sat at.
 
 ```bash
-open /Applications/OrbStack.app
-```
+# install Homebrew (Apple Silicon — adjust path on Intel Macs)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+eval "$(/opt/homebrew/bin/brew shellenv)"
 
-or just double-click OrbStack in `/Applications`. Then:
+# install colima + docker CLI
+brew install colima docker
 
-1. Click **Open** on the Gatekeeper dialog ("OrbStack is from Orbital
-   Labs, Inc.").
-2. Enter your password when prompted for the privileged helper install.
-3. On Apple Silicon, accept the Rosetta install dialog (one-time).
-4. Walk through the brief onboarding — Docker integration is on by
-   default, leave it. Skip Kubernetes if you don't need it.
+# start the VM (vz = native Apple Virtualization, no QEMU emulation)
+colima start --vm-type vz --cpu 4 --memory 6 --disk 60
 
-After onboarding, OrbStack lives in the menu bar and adds `docker` /
-`docker-compose` / `orb` to your PATH. **Open a new terminal** (the old
-one has stale PATH) and verify:
+# expose DOCKER_HOST in future shells
+cat >> ~/.zprofile <<'EOF'
 
-```bash
+# pgforge: ensure colima is running on every login + point docker at its socket
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+colima status >/dev/null 2>&1 || colima start --vm-type vz --cpu 4 --memory 6 --disk 60 >/dev/null 2>&1 &
+EOF
+source ~/.zprofile
+
+# verify
 docker ps
 # CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS   PORTS   NAMES
 ```
 
-**Step 3 — Autostart on login** so your pgforge instances come back up
-after a reboot:
-```bash
-osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/OrbStack.app", hidden:true}'
-```
-(GUI equivalent: OrbStack menu bar → Settings → System → toggle **Open
-at login**.)
+The `.zprofile` snippet means: every interactive SSH login checks if
+Colima is up, and starts it in the background if not. After a reboot,
+your first SSH connection brings docker back; pgforge containers with
+`restart=unless-stopped` then come back on their own.
 
-If you already have Docker Desktop running instead, that works too —
-pgforge talks to whatever Docker socket is exposed via `DOCKER_HOST`.
+(For a desktop Mac where you'd rather click an icon, [OrbStack](https://orbstack.dev)
+is faster and lighter than Docker Desktop — `brew install --cask orbstack`,
+then **launch it once via the GUI** to accept the Gatekeeper / helper /
+Rosetta prompts. Don't try this over SSH; it doesn't work.)
 
 #### Troubleshooting
 
-- **`open -a OrbStack` says "Unable to find application"** — Homebrew
-  installed the app bundle but LaunchServices hasn't reindexed yet. Use
-  the full path `open /Applications/OrbStack.app` instead.
-- **`open` over SSH returns "Domain does not support specified action"**
-  — you cannot start a macOS GUI app from an SSH session without an
-  active user login. Sit at the Mac for the first launch; subsequent
-  starts are fine over SSH because OrbStack is then registered as a
-  login item.
-- **`docker: command not found` after launching OrbStack** — your shell
-  still has the pre-install PATH. Open a new terminal window, or
-  `source ~/.zprofile`. OrbStack appends its CLI dir during onboarding.
+- **`brew services start colima` fails with `Domain does not support
+  specified action`** — `launchctl` `gui/<uid>` domain only exists when
+  the user has an active GUI (Aqua) session, which SSH alone doesn't
+  provide. Use the `.zprofile` pattern above instead of `brew services`.
+- **`docker: command not found`** — your shell still has the
+  pre-install PATH. Open a new terminal, or `source ~/.zprofile`.
+- **`colima start` says VM exited unexpectedly with Rosetta error** —
+  that's the OrbStack failure mode. With Colima `--vm-type vz` you
+  don't need Rosetta unless you specifically run x86_64 containers; PG
+  images are multi-arch.
 
 ### 2. pgforge binary
 
 Universal macOS binary (works on Apple Silicon + Intel):
 ```bash
+mkdir -p ~/.local/bin
 curl -L https://github.com/zygmunt-pawel/pg_forge_cli/releases/latest/download/pgforge \
-  -o /usr/local/bin/pgforge
-chmod +x /usr/local/bin/pgforge
-xattr -d com.apple.quarantine /usr/local/bin/pgforge 2>/dev/null || true
+  -o ~/.local/bin/pgforge
+chmod +x ~/.local/bin/pgforge
+xattr -d com.apple.quarantine ~/.local/bin/pgforge 2>/dev/null || true
+
+# add ~/.local/bin to PATH if not already there
+grep -q '/.local/bin' ~/.zprofile || echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.zprofile
+source ~/.zprofile
+
 pgforge --version
 ```
 
