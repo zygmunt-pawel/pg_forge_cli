@@ -229,6 +229,22 @@ impl AppState {
                     self.modal = Some(Modal::CloneAs { source: n, input: TextField::default() });
                 }
             }
+            KeyCode::Char('p') => {
+                // Preset resize wizard — cycle to a different tuning
+                // (tiny/small/medium/large). Preview parameters live
+                // in the modal; submit transitions to Confirm.
+                if let Some(inst) = self.selected_instance() {
+                    use std::str::FromStr;
+                    if let Ok(cur) = crate::domain::preset::Preset::from_str(&inst.preset_label) {
+                        let new = next_preset(cur);
+                        self.modal = Some(Modal::ResizeTo {
+                            name: inst.name.clone(),
+                            current: cur,
+                            new,
+                        });
+                    }
+                }
+            }
             KeyCode::Char('u') => {
                 // pg_upgrade (major-version pg) is rare enough that it
                 // lives only in the CLI now. `[u]` in the TUI means
@@ -433,6 +449,12 @@ impl AppState {
                 // every terminal supports that, no escape-sequence games.
                 Action::Nothing
             }
+            Some(Modal::ResizeTo { new, .. }) => match k.code {
+                KeyCode::Char(' ') | KeyCode::Right => { *new = next_preset(*new); Action::Nothing }
+                KeyCode::Left => { *new = prev_preset(*new); Action::Nothing }
+                KeyCode::Enter => Action::Submit,
+                _ => Action::Nothing,
+            },
             Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. }) | None => Action::Nothing,
         };
         match action {
@@ -580,6 +602,24 @@ impl AppState {
                     no_backup,
                 });
             }
+            Some(Modal::ResizeTo { name, current, new }) => {
+                if current == new {
+                    self.last_op_error = Some(OpError {
+                        instance: name.clone(),
+                        kind: OpKind::Resize,
+                        msg: format!("already on preset {:?} — cycle ← → to pick a different one", current),
+                        at: Instant::now(),
+                    });
+                    self.modal = Some(Modal::ResizeTo { name, current, new });
+                    return;
+                }
+                self.modal = Some(Modal::Confirm {
+                    kind: PendingDestructiveOp::Resize { name: name.clone(), new_preset: new },
+                    prompt: format!(
+                        "Resize {name} from {current:?} to {new:?}? Container will be recreated with the new memory limit (~10s downtime); volume preserved.",
+                    ),
+                });
+            }
             Some(other) => { self.modal = Some(other); /* should not happen */ }
             None => {}
         }
@@ -610,6 +650,12 @@ impl AppState {
                     // uses @) because OpKind tags the destination dispatcher.
                     let key = if delete_backups { format!("{name}@delete") } else { name };
                     self.pending_ops.push((key, OpKind::Destroy));
+                }
+                PendingDestructiveOp::Resize { name, new_preset } => {
+                    // Encoding: "name@<preset-name>" — ops::spawn maps the
+                    // preset string back via FromStr.
+                    let p = format!("{:?}", new_preset).to_lowercase();
+                    self.pending_ops.push((format!("{name}@{p}"), OpKind::Resize));
                 }
             }
         }

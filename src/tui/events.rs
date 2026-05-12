@@ -39,7 +39,7 @@ pub struct SnapshotsView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
-    Snapshot, Clone, Rotate, Upgrade, Restore, Destroy, Create,
+    Snapshot, Clone, Rotate, Upgrade, Restore, Destroy, Create, Resize,
     /// Sentinel for clipboard-copy failures. NEVER appears in
     /// `AppState::in_progress` (clipboard is sync, runs inline in the
     /// main loop), only in `OpError::kind` for rendering.
@@ -56,6 +56,7 @@ impl OpKind {
             OpKind::Restore   => "restore",
             OpKind::Destroy   => "destroy",
             OpKind::Create    => "create",
+            OpKind::Resize    => "resize",
             OpKind::Clipboard => "copy",
         }
     }
@@ -131,6 +132,7 @@ pub enum PendingDestructiveOp {
     Upgrade { name: String, to: u8 },
     Restore { source: String, as_: String, target_time: Option<String> },
     Destroy { name: String, delete_backups: bool },
+    Resize { name: String, new_preset: crate::domain::preset::Preset },
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +171,10 @@ pub enum Modal {
     /// header ("Connection string" vs "Instance ready"), used purely
     /// for retrieval — user selects with mouse + Cmd+C to copy.
     ConnectionString { name: String, uri: String },
+    /// Preset-resize wizard. ← → / space cycles `new` through tiny ↔
+    /// small ↔ medium ↔ large; Enter transitions to Confirm. `current`
+    /// is shown read-only so the user knows what they're changing from.
+    ResizeTo { name: String, current: crate::domain::preset::Preset, new: crate::domain::preset::Preset },
 }
 
 /// Map a PgForgeError (or anyhow) into the string carried by

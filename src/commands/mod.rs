@@ -3,6 +3,7 @@ pub mod create;
 pub mod destroy;
 pub mod ls;
 pub mod reconfigure;
+pub mod resize;
 pub mod restore;
 pub mod rotate;
 pub mod self_update;

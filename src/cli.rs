@@ -73,6 +73,16 @@ pub enum Command {
         #[arg(long = "to")]
         to_version: u8,
     },
+    /// Change an instance's preset (tuning) — adjusts RAM limit,
+    /// max_connections, shared_buffers etc. Rebuilds postgresql.conf
+    /// and recreates the container with the new memory ceiling.
+    /// Volume preserved (no data loss); ~10s downtime same as rotate.
+    Resize {
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_parser = parse_preset)]
+        preset: Preset,
+    },
     /// Replace the running pgforge binary with the latest GitHub
     /// release. Atomic rename — safe even while the running TUI is
     /// holding the old binary in memory; the new version applies on
@@ -272,6 +282,16 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("Upgraded {name} to PostgreSQL {to_version}.");
+            Ok(())
+        }
+        Some(Command::Resize { name, preset }) => {
+            let (old, new) = crate::commands::resize::run(crate::commands::resize::ResizeArgs {
+                name: name.clone(),
+                new_preset: preset,
+                override_state_root: None,
+            })
+            .await?;
+            println!("Resized {name}: {old:?} → {new:?} (container recreated, volume retained).");
             Ok(())
         }
         Some(Command::SelfUpdate { force }) => {

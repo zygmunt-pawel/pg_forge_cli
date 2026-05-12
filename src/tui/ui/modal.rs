@@ -17,6 +17,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::Create { .. } => (72, 17),
         Modal::CreatedSuccess { .. } => (90, 11),
         Modal::ConnectionString { .. } => (90, 9),
+        Modal::ResizeTo { .. } => (66, 11),
     };
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
@@ -206,6 +207,58 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 chunks[4],
             );
         }
+        Modal::ResizeTo { name, current, new } => {
+            let block = Block::default()
+                .title(format!(" Resize {name} "))
+                .borders(Borders::ALL);
+            f.render_widget(block, area);
+            let inner = area.inner(Margin { horizontal: 1, vertical: 1 });
+            let chunks = Layout::default().direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2), // current line
+                    Constraint::Length(2), // new line
+                    Constraint::Length(1), // spacer
+                    Constraint::Min(1),    // footer
+                ])
+                .split(inner);
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::styled("Current:", Style::default().fg(Color::DarkGray)),
+                    Line::raw(preset_summary(*current)),
+                ]),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::styled("New (← →):", Style::default().fg(Color::DarkGray)),
+                    Line::from(vec![
+                        Span::styled("▌ ", Style::default().fg(Color::Cyan)),
+                        Span::styled(
+                            preset_summary(*new),
+                            if new == current {
+                                Style::default().fg(Color::DarkGray)
+                            } else {
+                                Style::default().fg(Color::Yellow)
+                            },
+                        ),
+                    ]),
+                ]),
+                chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("[Space] / [← →]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" cycle preset   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[Enter]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" continue   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                    ]),
+                ]),
+                chunks[3],
+            );
+        }
         Modal::ConnectionString { name, uri } => {
             let block = Block::default()
                 .title(format!(" Connection string — {name} "))
@@ -273,6 +326,8 @@ fn field_para(label: &str, buf: &str, focused: bool) -> Paragraph<'static> {
 /// One-line summary of a Preset's tuning parameters, shown inline in the
 /// Create wizard so the user sees what they're picking at a glance:
 /// "small — 2GB RAM · 100 conn · 512MB shared_buffers"
+fn preset_summary(p: crate::domain::preset::Preset) -> String { preset_label(p) }
+
 fn preset_label(p: crate::domain::preset::Preset) -> String {
     let name = format!("{:?}", p).to_lowercase();
     let t = p.tuning();

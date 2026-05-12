@@ -35,6 +35,25 @@ pub fn spawn(
                 let (src, as_, tt) = parse_colon_at(&encoded);
                 (src.clone(), Box::pin(run_restore(src, as_, tt, state_root)))
             }
+            OpKind::Resize => {
+                // Encoding: "name@<preset_name>"
+                use std::str::FromStr;
+                let (name, suffix) = match encoded.split_once('@') {
+                    Some((n, s)) => (n.to_string(), s.to_string()),
+                    None         => (encoded.clone(), String::new()),
+                };
+                match crate::domain::preset::Preset::from_str(&suffix) {
+                    Ok(p) => (name.clone(), Box::pin(run_resize(name, p, state_root))),
+                    Err(e) => {
+                        let _ = tx.send(Event::OpFinished {
+                            instance: name,
+                            kind: OpKind::Resize,
+                            result: Err(format!("invalid preset encoding {:?}: {e}", suffix)),
+                        });
+                        return;
+                    }
+                }
+            }
             OpKind::Destroy => {
                 // Encoding: "name" = keep S3 backups; "name@delete" = wipe.
                 let (name, suffix) = match encoded.split_once('@') {
@@ -112,6 +131,12 @@ async fn run_restore(source: String, as_name: String, target_time: Option<String
 async fn run_destroy(name: String, delete_backups: bool, state_root: Option<PathBuf>) -> Result<()> {
     use crate::commands::destroy::{run, DestroyArgs};
     run(DestroyArgs { name, delete_backups, override_state_root: state_root }).await?;
+    Ok(())
+}
+
+async fn run_resize(name: String, new_preset: crate::domain::preset::Preset, state_root: Option<PathBuf>) -> Result<()> {
+    use crate::commands::resize::{run, ResizeArgs};
+    run(ResizeArgs { name, new_preset, override_state_root: state_root }).await?;
     Ok(())
 }
 
