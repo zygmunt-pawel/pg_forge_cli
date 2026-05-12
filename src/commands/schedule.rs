@@ -203,7 +203,25 @@ unsafe fn libc_getuid() -> u32 {
         .unwrap_or(501)
 }
 
-fn render_plist(exe: &str, log_path: &str) -> String {
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\'' => out.push_str("&apos;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn render_plist(exe: &str, log_path: &str) -> String {
+    let exe_esc = xml_escape(exe);
+    let log_esc = xml_escape(log_path);
+    let label_esc = xml_escape(AGENT_LABEL);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -233,10 +251,10 @@ fn render_plist(exe: &str, log_path: &str) -> String {
 </dict>
 </plist>
 "#,
-        label = AGENT_LABEL,
-        exe = exe,
+        label = label_esc,
+        exe = exe_esc,
         tick = TICK_SECONDS,
-        log = log_path,
+        log = log_esc,
     )
 }
 

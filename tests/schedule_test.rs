@@ -1,4 +1,6 @@
-use pgforge::commands::schedule::{launchctl_is_already_gone, launchctl_is_soft_install_failure};
+use pgforge::commands::schedule::{
+    launchctl_is_already_gone, launchctl_is_soft_install_failure, render_plist,
+};
 
 // ---------------------------------------------------------------------------
 // install() soft-failure recognition
@@ -72,4 +74,33 @@ fn uninstall_propagates_real_errors() {
     assert!(!launchctl_is_already_gone(
         "Load failed: cant parse plist"
     ));
+}
+
+// ---------------------------------------------------------------------------
+// render_plist() XML-escape tests
+// Real signature: render_plist(exe: &str, log_path: &str) -> String
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plist_xml_escapes_paths_with_ampersand() {
+    let plist = render_plist("/Users/me/A&B/pgforge", "/tmp/log&log");
+    assert!(
+        plist.contains("/Users/me/A&amp;B/pgforge"),
+        "ampersand in exe path must be XML-escaped"
+    );
+    assert!(
+        !plist.contains("A&B/pgforge"),
+        "raw & must not appear inside plist body"
+    );
+    assert!(
+        plist.contains("log&amp;log"),
+        "ampersand in log path must be XML-escaped"
+    );
+}
+
+#[test]
+fn plist_xml_escapes_angle_brackets_and_quotes() {
+    let plist = render_plist("/tmp/<weird>'path", "/tmp/log");
+    assert!(plist.contains("&lt;weird&gt;"));
+    assert!(plist.contains("&apos;path") || plist.contains("&#39;path"));
 }
