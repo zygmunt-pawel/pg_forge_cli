@@ -11,36 +11,56 @@ use tokio::time::Instant;
 /// briefly refuses exec calls. We treat that the same as "pg not ready yet"
 /// and retry — important on restore where pgbackrest can take a while and
 /// the postgres entrypoint may flap once before settling.
+///
+/// Uses a deadline-based loop (via `tokio::time::Instant`) so that the actual
+/// wall-clock timeout matches `seconds` regardless of how long each exec takes.
+/// Also fails fast (~5s) if the container is consistently not running, which
+/// indicates a crash rather than a normal slow startup.
 pub async fn wait_for_pg_ready<E: DockerEngine>(
     docker: &E,
     id: &str,
     seconds: u64,
 ) -> Result<()> {
-    for _ in 0..seconds {
+    let mut consecutive_not_running = 0u32;
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
         match docker
             .exec(id, &["pg_isready", "-h", "/var/run/postgresql"])
             .await
         {
             Ok(out) if out.exit_code == 0 => return Ok(()),
-            Ok(_) => {} // pg not ready, keep waiting
+            Ok(_) => {
+                consecutive_not_running = 0;
+            }
             Err(e) => {
                 let msg = e.to_string();
                 // Docker exec returns 409 while the container is in
                 // restart-loop or hasn't fully transitioned to running.
                 // Both resolve themselves within seconds — keep polling.
-                let transient = msg.contains("is restarting")
-                    || msg.contains("is not running")
-                    || msg.contains("status code 409");
-                if !transient {
+                if msg.contains("is restarting") || msg.contains("status code 409") {
+                    consecutive_not_running = 0;
+                } else if msg.contains("is not running") {
+                    consecutive_not_running += 1;
+                    // Container is stopped (not restart-flapping). After ~5
+                    // consecutive reports we conclude it crashed and won't
+                    // recover; fail fast rather than running out the deadline.
+                    if consecutive_not_running >= 5 {
+                        return Err(PgForgeError::Docker(format!(
+                            "container {id} is not running (crashed before pg_isready); see container logs"
+                        )));
+                    }
+                } else {
                     return Err(e);
                 }
             }
         }
+        if Instant::now() >= deadline {
+            return Err(PgForgeError::Docker(format!(
+                "container {id}: postgres did not accept connections within {seconds}s"
+            )));
+        }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    Err(PgForgeError::Docker(format!(
-        "container {id}: postgres did not accept connections within {seconds}s"
-    )))
 }
 
 /// After `wait_for_pg_ready` returns, the cluster may still be in recovery
