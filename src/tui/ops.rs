@@ -44,9 +44,12 @@ pub fn spawn(
                 let delete_backups = suffix == "delete";
                 (name.clone(), Box::pin(run_destroy(name, delete_backups, state_root)))
             }
-            OpKind::Clipboard => {
-                // Clipboard is sync and never spawned; this branch is
-                // unreachable in practice but must be exhaustive.
+            OpKind::Clipboard | OpKind::Create => {
+                // Clipboard is sync and never spawned via this entry
+                // point; Create is dispatched via `spawn_create` (its
+                // arg list doesn't fit the (encoded, kind) shape).
+                // Both branches are unreachable in normal flow but
+                // must be exhaustive.
                 return;
             }
         };
@@ -109,5 +112,44 @@ async fn run_restore(source: String, as_name: String, target_time: Option<String
 async fn run_destroy(name: String, delete_backups: bool, state_root: Option<PathBuf>) -> Result<()> {
     use crate::commands::destroy::{run, DestroyArgs};
     run(DestroyArgs { name, delete_backups, override_state_root: state_root }).await?;
+    Ok(())
+}
+
+/// Dispatch a CreateRequest from `AppState::pending_creates`. Wraps
+/// commands::create with the same OpStarted/OpFinished envelope as
+/// other long-ops so the lock/spinner/flash machinery works.
+pub fn spawn_create(
+    req: crate::tui::events::CreateRequest,
+    tx: tokio::sync::mpsc::UnboundedSender<crate::tui::events::Event>,
+    state_root: Option<PathBuf>,
+) {
+    let name = req.name.clone();
+    tokio::spawn(async move {
+        let _ = tx.send(crate::tui::events::Event::OpStarted {
+            instance: name.clone(),
+            kind: crate::tui::events::OpKind::Create,
+        });
+        let result = run_create(req, state_root).await.map_err(|e| e.to_string());
+        let _ = tx.send(crate::tui::events::Event::OpFinished {
+            instance: name,
+            kind: crate::tui::events::OpKind::Create,
+            result,
+        });
+    });
+}
+
+async fn run_create(req: crate::tui::events::CreateRequest, state_root: Option<PathBuf>) -> Result<()> {
+    use crate::commands::create::{run as run_cmd, CreateArgs};
+    run_cmd(CreateArgs {
+        name: req.name,
+        preset: req.preset,
+        pg_version: req.pg_version,
+        app_user: req.app_user,
+        app_password: req.app_password,
+        pgbackrest_password: req.pgbackrest_password,
+        override_state_root: state_root,
+        no_backup: req.no_backup,
+    })
+    .await?;
     Ok(())
 }

@@ -83,8 +83,30 @@ async fn run_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         for n in std::mem::take(&mut state.refresh_requests) {
             refresh::refresh_one(n, tx.clone(), None);
         }
+        for req in std::mem::take(&mut state.pending_creates) {
+            ops::spawn_create(req, tx.clone(), None);
+        }
+        // After a successful Create, build the URI from the freshly-written
+        // state.toml and open the CreatedSuccess modal so the user can
+        // copy the password before it disappears into 0600 storage.
+        for n in std::mem::take(&mut state.pending_show_created) {
+            match build_post_create_uri(&n) {
+                Ok(uri) => {
+                    state.modal = Some(crate::tui::events::Modal::CreatedSuccess { name: n, uri });
+                }
+                Err(e) => {
+                    tracing::warn!(target: "pgforge::tui", "post-create URI build for {n} failed: {e}");
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn build_post_create_uri(instance_name: &str) -> Result<String> {
+    let root = crate::state::instance::InstanceState::default_state_root();
+    let st = crate::state::instance::InstanceState::load_under(&root, instance_name)?;
+    Ok(clipboard::build_connection_uri(&st))
 }
 
 fn do_clipboard(instance_name: &str) -> Result<()> {

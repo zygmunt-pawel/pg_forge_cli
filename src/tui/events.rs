@@ -30,7 +30,7 @@ pub struct SnapshotsView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
-    Snapshot, Clone, Rotate, Upgrade, Restore, Destroy,
+    Snapshot, Clone, Rotate, Upgrade, Restore, Destroy, Create,
     /// Sentinel for clipboard-copy failures. NEVER appears in
     /// `AppState::in_progress` (clipboard is sync, runs inline in the
     /// main loop), only in `OpError::kind` for rendering.
@@ -46,6 +46,7 @@ impl OpKind {
             OpKind::Upgrade   => "upgrade",
             OpKind::Restore   => "restore",
             OpKind::Destroy   => "destroy",
+            OpKind::Create    => "create",
             OpKind::Clipboard => "copy",
         }
     }
@@ -101,6 +102,20 @@ impl TextField {
     }
 }
 
+/// Drained by the main loop; spawned as a `pgforge create` op task.
+/// Lives in `AppState::pending_creates` because the parameter list is
+/// larger than the (name, kind) pair used by other ops.
+#[derive(Debug, Clone)]
+pub struct CreateRequest {
+    pub name: String,
+    pub app_user: String,
+    pub app_password: String,
+    pub pgbackrest_password: String,
+    pub pg_version: u8,
+    pub preset: crate::domain::preset::Preset,
+    pub no_backup: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum PendingDestructiveOp {
     Rotate { name: String },
@@ -117,6 +132,31 @@ pub enum Modal {
     Confirm { kind: PendingDestructiveOp, prompt: String },
     Snapshots { name: String, view: SnapshotsView },
     ErrorDetail { msg: String },
+    /// Wizard for `pgforge create`. All values pre-filled with generated
+    /// defaults; user can edit name / app_user / pg_version, cycle
+    /// preset with arrow keys, toggle no_backup with space. Password is
+    /// always generated (never editable) — shown ONCE on success.
+    Create {
+        name: TextField,
+        app_user: TextField,
+        pg_version: TextField,
+        preset: crate::domain::preset::Preset,
+        no_backup: bool,
+        /// 0=name, 1=app_user, 2=pg_version, 3=preset, 4=no_backup
+        focus: u8,
+        /// Pre-generated password, stashed here so submit can pick it
+        /// up without re-generating. Not displayed in the modal body
+        /// (that would defeat the show-once-on-success flow).
+        generated_password: String,
+        /// Pre-generated pgbackrest password (only used when backup_enabled).
+        generated_pgbackrest_password: String,
+    },
+    /// Shown after a successful `pgforge create` from the TUI wizard.
+    /// Contains the full connection URI with the generated password
+    /// embedded — this is the user's one well-marked opportunity to
+    /// copy it (the password lives in state.toml afterwards, but the
+    /// URI is never rebuilt-and-displayed for them again).
+    CreatedSuccess { name: String, uri: String },
 }
 
 /// Map a PgForgeError (or anyhow) into the string carried by

@@ -14,6 +14,8 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::Confirm { .. } => (60, 7),
         Modal::ErrorDetail { .. } => (80, 15),
         Modal::Snapshots { .. } => (80, 20),
+        Modal::Create { .. } => (66, 14),
+        Modal::CreatedSuccess { .. } => (90, 11),
     };
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
@@ -68,6 +70,98 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             }
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
         }
+        Modal::Create { name, app_user, pg_version, preset, no_backup, focus, .. } => {
+            let block = Block::default().title(" Create new instance ").borders(Borders::ALL);
+            f.render_widget(block, area);
+            let inner = area.inner(Margin{ horizontal: 1, vertical: 1 });
+            let chunks = Layout::default().direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2), // name
+                    Constraint::Length(2), // app_user
+                    Constraint::Length(2), // pg_version
+                    Constraint::Length(2), // preset
+                    Constraint::Length(2), // backup toggle
+                    Constraint::Min(1),    // footer
+                ])
+                .split(inner);
+            f.render_widget(field_para("Instance name:", &name.buf, *focus == 0), chunks[0]);
+            f.render_widget(field_para("App user:", &app_user.buf, *focus == 1), chunks[1]);
+            f.render_widget(field_para("Postgres version:", &pg_version.buf, *focus == 2), chunks[2]);
+            f.render_widget(
+                cycle_para(
+                    "Preset (← →):",
+                    &format!("{:?}", preset).to_lowercase(),
+                    *focus == 3,
+                ),
+                chunks[3],
+            );
+            f.render_widget(
+                cycle_para(
+                    "Backups (space):",
+                    if *no_backup { "off — local dev / no S3" } else { "on — requires S3 in config.toml" },
+                    *focus == 4,
+                ),
+                chunks[4],
+            );
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::raw(""),
+                    Line::styled(
+                        "Password is auto-generated and shown once on success.",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Line::styled(
+                        "[Tab] field   [Space/←→] cycle   [Enter] create   [Esc] cancel",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+                chunks[5],
+            );
+        }
+        Modal::CreatedSuccess { name, uri } => {
+            let block = Block::default()
+                .title(format!(" Instance '{name}' ready "))
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::Green));
+            f.render_widget(block, area);
+            let inner = area.inner(Margin { horizontal: 1, vertical: 1 });
+            let chunks = Layout::default().direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2), // heading
+                    Constraint::Length(2), // URI line
+                    Constraint::Length(1), // spacer
+                    Constraint::Length(2), // warning
+                    Constraint::Min(1),    // footer
+                ])
+                .split(inner);
+            f.render_widget(
+                Paragraph::new(Line::styled(
+                    "Save this connection URI now. The generated password is also in state.toml (0600).",
+                    Style::default().fg(Color::White),
+                ))
+                .wrap(Wrap { trim: false }),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("▌ ", Style::default().fg(Color::Cyan)),
+                    Span::styled(uri.as_str(), Style::default().fg(Color::Yellow)),
+                ])),
+                chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new(Line::styled(
+                    "After dismiss, retrieve again with [Enter] on the instance row.",
+                    Style::default().fg(Color::DarkGray),
+                )).wrap(Wrap { trim: true }),
+                chunks[3],
+            );
+            f.render_widget(
+                Paragraph::new("[c]/[Enter] copy to clipboard   [Esc] dismiss")
+                    .style(Style::default().fg(Color::DarkGray)),
+                chunks[4],
+            );
+        }
     }
 }
 
@@ -95,6 +189,20 @@ fn field_para(label: &str, buf: &str, focused: bool) -> Paragraph<'static> {
         Line::from(vec![
             Span::styled(marker, Style::default().fg(if focused { Color::Cyan } else { Color::DarkGray })),
             Span::raw(buf.to_string()),
+        ]),
+    ])
+}
+
+fn cycle_para(label: &str, value: &str, focused: bool) -> Paragraph<'static> {
+    let marker = if focused { "▌ " } else { "  " };
+    Paragraph::new(vec![
+        Line::styled(label.to_string(), Style::default().fg(Color::DarkGray)),
+        Line::from(vec![
+            Span::styled(marker, Style::default().fg(if focused { Color::Cyan } else { Color::DarkGray })),
+            Span::styled(
+                value.to_string(),
+                Style::default().fg(if focused { Color::Yellow } else { Color::White }),
+            ),
         ]),
     ])
 }

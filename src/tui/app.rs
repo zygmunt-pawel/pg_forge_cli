@@ -23,6 +23,15 @@ pub struct AppState {
     pub pending_ops: Vec<(String, OpKind)>,
     pub pending_clipboard: Vec<String>,
     pub refresh_requests: Vec<String>,
+    /// Drained by the main loop and dispatched to `ops::spawn_create`.
+    /// Separate from `pending_ops` because Create takes more args than
+    /// (encoded_string, kind).
+    pub pending_creates: Vec<CreateRequest>,
+    /// Names whose post-Create CreatedSuccess modal still needs to be
+    /// opened. Drained by the main loop, which loads state.toml to
+    /// build the connection URI before showing the modal — kept out of
+    /// `apply_event` to preserve its purity.
+    pub pending_show_created: Vec<String>,
 }
 
 impl Default for AppState {
@@ -42,6 +51,8 @@ impl Default for AppState {
             pending_ops: Vec::new(),
             pending_clipboard: Vec::new(),
             refresh_requests: Vec::new(),
+            pending_creates: Vec::new(),
+            pending_show_created: Vec::new(),
         }
     }
 }
@@ -102,7 +113,16 @@ impl AppState {
                             kind: FlashKind::Success,
                             at: Instant::now(),
                         });
-                        self.refresh_requests.push(instance.clone());
+                        // Destroyed instances have no state to refresh.
+                        if kind != OpKind::Destroy {
+                            self.refresh_requests.push(instance.clone());
+                        }
+                        // Newly-created instances trigger a one-time
+                        // CreatedSuccess modal so the user can copy
+                        // the URI before it lives only in state.toml.
+                        if kind == OpKind::Create {
+                            self.pending_show_created.push(instance.clone());
+                        }
                     }
                     Err(msg) => {
                         self.last_op_error = Some(OpError {
@@ -213,6 +233,32 @@ impl AppState {
                     self.pending_clipboard.push(n);
                 }
             }
+            KeyCode::Char('n') => {
+                // Open the Create wizard with pre-generated defaults.
+                use crate::util::random;
+                let mut name = random::instance_name();
+                // Avoid collisions with existing instances (extremely unlikely
+                // but cheap to be safe — 4 hex × random = ~65k space).
+                let existing: std::collections::HashSet<&str> =
+                    self.instances.iter().map(|r| r.name.as_str()).collect();
+                for _ in 0..16 {
+                    if !existing.contains(name.as_str()) { break; }
+                    name = random::instance_name();
+                }
+                let name_field = TextField { buf: name, cursor: 0 };
+                let app_user_field = TextField { buf: "app".into(), cursor: 0 };
+                let pg_field = TextField { buf: "18".into(), cursor: 0 };
+                self.modal = Some(Modal::Create {
+                    name: name_field,
+                    app_user: app_user_field,
+                    pg_version: pg_field,
+                    preset: crate::domain::preset::Preset::Small,
+                    no_backup: true, // safer default — S3 isn't configured on most fresh setups
+                    focus: 0,
+                    generated_password: random::password(24),
+                    generated_pgbackrest_password: random::password(24),
+                });
+            }
             _ => {}
         }
     }
@@ -256,6 +302,80 @@ impl AppState {
             Some(Modal::Confirm { .. }) => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => Action::ConfirmYes,
                 KeyCode::Char('n') => Action::ConfirmNo,
+                _ => Action::Nothing,
+            },
+            Some(Modal::Create { name, app_user, pg_version, preset, no_backup, focus, .. }) => {
+                // 5 fields, cycle with Tab. Space cycles preset / toggles backup.
+                match k.code {
+                    KeyCode::Tab       => { *focus = (*focus + 1) % 5; Action::Nothing }
+                    KeyCode::BackTab   => { *focus = (*focus + 4) % 5; Action::Nothing }
+                    KeyCode::Enter     => Action::Submit,
+                    KeyCode::Char(' ') => {
+                        match *focus {
+                            3 => { *preset = next_preset(*preset); Action::Nothing }
+                            4 => { *no_backup = !*no_backup; Action::Nothing }
+                            // For text fields, space inserts a space character.
+                            0 => { name.insert_char(' '); Action::Nothing }
+                            1 => { app_user.insert_char(' '); Action::Nothing }
+                            2 => { pg_version.insert_char(' '); Action::Nothing }
+                            _ => Action::Nothing,
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right if *focus == 3 => {
+                        *preset = match k.code {
+                            KeyCode::Right => next_preset(*preset),
+                            _              => prev_preset(*preset),
+                        };
+                        Action::Nothing
+                    }
+                    KeyCode::Char(c) if !c.is_control() => {
+                        let field = match *focus {
+                            0 => Some(&mut *name),
+                            1 => Some(&mut *app_user),
+                            2 => Some(&mut *pg_version),
+                            _ => None,
+                        };
+                        if let Some(f) = field { f.insert_char(c); }
+                        Action::Nothing
+                    }
+                    KeyCode::Backspace => {
+                        let field = match *focus {
+                            0 => Some(&mut *name),
+                            1 => Some(&mut *app_user),
+                            2 => Some(&mut *pg_version),
+                            _ => None,
+                        };
+                        if let Some(f) = field { f.backspace(); }
+                        Action::Nothing
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        let field = match *focus {
+                            0 => Some(&mut *name),
+                            1 => Some(&mut *app_user),
+                            2 => Some(&mut *pg_version),
+                            _ => None,
+                        };
+                        if let Some(f) = field {
+                            if k.code == KeyCode::Left { f.move_left(); } else { f.move_right(); }
+                        }
+                        Action::Nothing
+                    }
+                    _ => Action::Nothing,
+                }
+            }
+            Some(Modal::CreatedSuccess { uri, .. }) => match k.code {
+                // [c] / [Enter] copies the URI; the modal stays so the user
+                // can still see it and explicitly Esc.
+                KeyCode::Char('c') | KeyCode::Enter => {
+                    let to_copy = uri.clone();
+                    let _ = crate::tui::clipboard::copy_to_clipboard(&to_copy);
+                    self.flash = Some(Flash {
+                        msg: "copied connection string to clipboard".into(),
+                        kind: FlashKind::Success,
+                        at: Instant::now(),
+                    });
+                    Action::Nothing
+                }
                 _ => Action::Nothing,
             },
             Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. }) | None => Action::Nothing,
@@ -338,6 +458,63 @@ impl AppState {
                     prompt: format!("Restore {source} → new instance {as_}? Takes minutes."),
                 });
             }
+            Some(Modal::Create {
+                name, app_user, pg_version, preset, no_backup, focus,
+                generated_password, generated_pgbackrest_password,
+            }) => {
+                // Validate name
+                if let Err(msg) = validate_instance_name(&name.buf) {
+                    self.last_op_error = Some(OpError {
+                        instance: name.buf.clone(), kind: OpKind::Snapshot, // closest fit; no Create-kind in OpError
+                        msg, at: Instant::now(),
+                    });
+                    self.modal = Some(Modal::Create {
+                        name, app_user, pg_version, preset, no_backup, focus,
+                        generated_password, generated_pgbackrest_password,
+                    });
+                    return;
+                }
+                // Validate version
+                let ver = match pg_version.buf.parse::<u8>() {
+                    Ok(v) if v > 0 => v,
+                    _ => {
+                        self.last_op_error = Some(OpError {
+                            instance: name.buf.clone(), kind: OpKind::Snapshot,
+                            msg: format!("invalid pg version: {:?}", pg_version.buf),
+                            at: Instant::now(),
+                        });
+                        self.modal = Some(Modal::Create {
+                            name, app_user, pg_version, preset, no_backup, focus,
+                            generated_password, generated_pgbackrest_password,
+                        });
+                        return;
+                    }
+                };
+                // Validate app_user (relaxed: just non-empty, allow letters+digits+_).
+                if app_user.buf.is_empty()
+                    || !app_user.buf.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    self.last_op_error = Some(OpError {
+                        instance: name.buf.clone(), kind: OpKind::Snapshot,
+                        msg: "app_user must be non-empty [a-zA-Z0-9_]".into(),
+                        at: Instant::now(),
+                    });
+                    self.modal = Some(Modal::Create {
+                        name, app_user, pg_version, preset, no_backup, focus,
+                        generated_password, generated_pgbackrest_password,
+                    });
+                    return;
+                }
+                self.pending_creates.push(CreateRequest {
+                    name: name.buf.clone(),
+                    app_user: app_user.buf.clone(),
+                    app_password: generated_password,
+                    pgbackrest_password: generated_pgbackrest_password,
+                    pg_version: ver,
+                    preset,
+                    no_backup,
+                });
+            }
             Some(other) => { self.modal = Some(other); /* should not happen */ }
             None => {}
         }
@@ -376,6 +553,16 @@ impl AppState {
 
 /// Validator reused by clone+restore. Delegates to
 /// `domain::instance::Instance::validate_name` (single source of truth).
+fn next_preset(p: crate::domain::preset::Preset) -> crate::domain::preset::Preset {
+    use crate::domain::preset::Preset::*;
+    match p { Tiny => Small, Small => Medium, Medium => Large, Large => Tiny }
+}
+
+fn prev_preset(p: crate::domain::preset::Preset) -> crate::domain::preset::Preset {
+    use crate::domain::preset::Preset::*;
+    match p { Tiny => Large, Small => Tiny, Medium => Small, Large => Medium }
+}
+
 fn validate_instance_name(s: &str) -> std::result::Result<(), String> {
     use crate::domain::instance::Instance;
     Instance::validate_name(s).map_err(|e| e.to_string())
