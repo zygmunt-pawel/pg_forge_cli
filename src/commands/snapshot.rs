@@ -97,6 +97,28 @@ pub async fn run(args: SnapshotArgs) -> Result<SnapshotRecord> {
     run_with_engine(args, &docker, state_root).await
 }
 
+/// Belt-and-braces scan of pgbackrest output. Even when exit code is 0,
+/// surface output that contains the canonical pgbackrest error markers.
+pub fn pgbackrest_indicates_failure(s: &str) -> bool {
+    s.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("ERROR:") || l.starts_with("ABORTED:")
+    })
+}
+
+/// Remove lines that may carry secret material (S3 keys, passwords).
+pub fn redact_pgbackrest_output(s: &str) -> String {
+    s.lines()
+        .filter(|l| {
+            let lc = l.to_ascii_lowercase();
+            !lc.contains("repo1-s3-key")
+                && !lc.contains("repo1-cipher-pass")
+                && !lc.contains("password")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub async fn run_with_engine<E: DockerEngine>(
     args: SnapshotArgs,
     docker: &E,
@@ -116,10 +138,14 @@ pub async fn run_with_engine<E: DockerEngine>(
             &["pgbackrest", "--stanza=main", "--type=full", "backup"],
         )
         .await?;
-    if out.exit_code != 0 {
+    if out.exit_code != 0
+        || pgbackrest_indicates_failure(&out.stderr)
+        || pgbackrest_indicates_failure(&out.stdout)
+    {
         return Err(PgForgeError::Docker(format!(
             "pgbackrest backup failed (exit {}): {}",
-            out.exit_code, out.stderr
+            out.exit_code,
+            redact_pgbackrest_output(&out.stderr)
         )));
     }
     let label = parse_backup_label(&out.stdout).ok_or_else(|| {
