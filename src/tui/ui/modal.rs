@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::Confirm { .. } => (60, 7),
         Modal::ErrorDetail { .. } => (80, 15),
         Modal::Snapshots { .. } => (80, 20),
-        Modal::Create { .. } => (66, 14),
+        Modal::Create { .. } => (72, 17),
         Modal::CreatedSuccess { .. } => (90, 11),
     };
     let area = centered_rect(w, h, full);
@@ -111,15 +111,28 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 ),
                 chunks[4],
             );
+            // Help footer — styled spans so the keys stand out from the
+            // surrounding prose. Three lines because [n]ew is the most
+            // discovery-heavy keybind and users were missing them.
+            let key = Style::default().fg(Color::Cyan);
+            let dim = Style::default().fg(Color::DarkGray);
             f.render_widget(
                 Paragraph::new(vec![
                     Line::raw(""),
+                    Line::from(vec![
+                        Span::styled("[Tab]", key), Span::styled(" next field   ", dim),
+                        Span::styled("[Shift+Tab]", key), Span::styled(" previous", dim),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("[Space] / [← →]", key),
+                        Span::styled(" cycle preset & backups toggle", dim),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("[Enter]", key), Span::styled(" create instance   ", dim),
+                        Span::styled("[Esc]", key), Span::styled(" cancel", dim),
+                    ]),
                     Line::styled(
-                        "Password is auto-generated and shown once on success.",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Line::styled(
-                        "[Tab] field   [Space/←→] cycle   [Enter] create   [Esc] cancel",
+                        "Password is auto-generated and shown once after [Enter].",
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]),
