@@ -118,9 +118,13 @@ pub async fn run_with_engine<E: DockerEngine>(
         &pgbackrest_conf,
         generate_pgbackrest_conf(&args.source, &s3, 30),
     )?;
+    let canonical_target = match args.target_time.as_deref() {
+        Some(s) => Some(crate::time::canonicalize_target_time(s)?),
+        None => None,
+    };
     std::fs::write(
         &entrypoint,
-        generate_restore_entrypoint(args.target_time.as_deref()),
+        generate_restore_entrypoint(canonical_target.as_deref()),
     )
     .map_err(|e| PgForgeError::Io {
         path: entrypoint.clone(),
@@ -166,6 +170,9 @@ pub async fn run_with_engine<E: DockerEngine>(
         "PGDATA".into(),
         "/var/lib/postgresql/data/pgdata".into(),
     );
+    if let Some(t) = &canonical_target {
+        env.insert("PGFORGE_TARGET".into(), t.clone());
+    }
 
     let binds = vec![
         BindMount {

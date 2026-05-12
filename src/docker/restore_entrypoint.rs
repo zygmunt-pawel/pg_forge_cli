@@ -10,11 +10,10 @@
 /// using `PG_VERSION` as the guard would cause a retry to skip restore and boot
 /// a corrupt cluster. The marker is absent in that case, so the retry proceeds.
 pub fn generate_restore_entrypoint(target_time: Option<&str>) -> String {
-    let target_args = match target_time {
-        Some(t) => format!(
-            r#" --type=time --target="{t}" --target-action=promote"#
-        ),
-        None => " --target-action=promote".to_string(),
+    let target_block = if target_time.is_some() {
+        r#"TARGET_ARGS="--type=time --target=$PGFORGE_TARGET --target-action=promote""#
+    } else {
+        r#"TARGET_ARGS="--target-action=promote""#
     };
     format!(
         r#"#!/bin/sh
@@ -23,6 +22,8 @@ set -eu
 
 PGDATA="/var/lib/postgresql/data/pgdata"
 MARKER="$PGDATA/.pgforge-restore-complete"
+
+{target_block}
 
 # Marker is written ONLY after pgbackrest restore returns 0. A failed or
 # partial restore leaves PG_VERSION behind in pgdata — without the marker
@@ -33,7 +34,7 @@ if [ ! -f "$MARKER" ]; then
     # Clear any half-restored content; pgbackrest restore --delta would also
     # work but we want a strict re-do here.
     find "$PGDATA" -mindepth 1 -delete 2>/dev/null || true
-    su - postgres -c 'pgbackrest --stanza=main restore --pg1-path=/var/lib/postgresql/data/pgdata{target_args}'
+    su - postgres -c "PGFORGE_TARGET=$PGFORGE_TARGET pgbackrest --stanza=main restore --pg1-path=/var/lib/postgresql/data/pgdata $TARGET_ARGS"
     touch "$MARKER"
     chown postgres:postgres "$MARKER"
 fi
@@ -42,6 +43,6 @@ exec docker-entrypoint.sh postgres \
     -c config_file=/etc/postgresql/postgresql.conf \
     -c hba_file=/etc/postgresql/pg_hba.conf
 "#,
-        target_args = target_args
+        target_block = target_block
     )
 }

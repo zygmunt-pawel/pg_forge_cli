@@ -36,3 +36,16 @@ pub fn parse_target_time(s: &str) -> Result<Timestamp> {
         "cannot parse target-time {trimmed:?} — expected RFC 3339 (e.g. 2026-05-10T14:23:00Z)"
     )))
 }
+
+/// Parse a user-supplied target time (any form accepted by `parse_target_time`)
+/// and re-emit it as strict UTC RFC 3339 with `Z` suffix. The canonical form
+/// is what we hand to pgbackrest `--target=`, so the container's local TZ
+/// (which we do not control on macOS Docker Desktop) cannot shift the
+/// recovery point.
+pub fn canonicalize_target_time(s: &str) -> Result<String> {
+    let ts = parse_target_time(s)?;
+    let secs = ts.as_second();
+    Ok(Timestamp::from_second(secs)
+        .map(|t| t.to_string())
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()))
+}

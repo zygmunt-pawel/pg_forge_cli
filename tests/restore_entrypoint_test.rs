@@ -5,7 +5,12 @@ fn entrypoint_runs_pgbackrest_restore_with_target_time() {
     let script = generate_restore_entrypoint(Some("2026-05-10T14:23:00Z"));
     assert!(script.contains("pgbackrest --stanza=main"));
     assert!(script.contains("restore"));
-    assert!(script.contains("--target=\"2026-05-10T14:23:00Z\""));
+    // Value must NOT be interpolated literally — it should reference env var.
+    assert!(
+        !script.contains("--target=\"2026-05-10T14:23:00Z\""),
+        "target time must not be interpolated as a literal string"
+    );
+    assert!(script.contains("--target=$PGFORGE_TARGET"), "expected --target=$PGFORGE_TARGET");
     assert!(script.contains("--type=time"));
     assert!(script.contains("--target-action=promote"));
 }
@@ -15,10 +20,24 @@ fn entrypoint_restores_latest_when_no_target_time() {
     let script = generate_restore_entrypoint(None);
     assert!(script.contains("pgbackrest --stanza=main"));
     assert!(script.contains("restore"));
-    assert!(!script.contains("--target="));
+    // When no target time, --type=time and --target=$PGFORGE_TARGET must not appear.
+    assert!(!script.contains("--type=time"), "no --type=time without target");
+    assert!(!script.contains("--target=$PGFORGE_TARGET"), "no --target var without target");
     // Critical: must auto-promote, otherwise PG sits in paused recovery.
     assert!(script.contains("--target-action=promote"),
             "default restore must include --target-action=promote, got:\n{script}");
+}
+
+#[test]
+fn target_time_passed_via_env_not_interpolated() {
+    let s = generate_restore_entrypoint(Some("2026-05-12T14:00:00Z"));
+    // Target value should not appear inside double-quoted shell string.
+    assert!(
+        !s.contains(r#"--target="2026-05-12T14:00:00Z""#),
+        "target time must not be interpolated into the script; pass via env"
+    );
+    // Should reference an env var instead.
+    assert!(s.contains("PGFORGE_TARGET"), "expected PGFORGE_TARGET env var as the target carrier");
 }
 
 #[test]

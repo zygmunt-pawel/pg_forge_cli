@@ -1,4 +1,4 @@
-use pgforge::time::{now_iso, parse_target_time};
+use pgforge::time::{canonicalize_target_time, now_iso, parse_target_time};
 
 #[test]
 fn now_iso_returns_20_char_z_string() {
@@ -30,4 +30,33 @@ fn parse_target_time_accepts_offset() {
 fn parse_target_time_rejects_garbage() {
     assert!(parse_target_time("not a date").is_err());
     assert!(parse_target_time("").is_err());
+}
+
+#[test]
+fn canonicalizes_space_separator_as_utc() {
+    assert_eq!(
+        canonicalize_target_time("2026-05-12 14:00:00").unwrap(),
+        "2026-05-12T14:00:00Z"
+    );
+}
+
+#[test]
+fn canonicalizes_offset_to_utc() {
+    assert_eq!(
+        canonicalize_target_time("2026-05-12T14:00:00+02:00").unwrap(),
+        "2026-05-12T12:00:00Z"
+    );
+}
+
+#[test]
+fn passes_through_z_form() {
+    assert_eq!(
+        canonicalize_target_time("2026-05-12T14:00:00Z").unwrap(),
+        "2026-05-12T14:00:00Z"
+    );
+}
+
+#[test]
+fn rejects_garbage() {
+    assert!(canonicalize_target_time("not a time").is_err());
 }
