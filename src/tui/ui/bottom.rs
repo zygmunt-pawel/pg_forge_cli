@@ -1,15 +1,30 @@
 //! Bottom bar — priority: error > running op > flash > default keybinds.
+//! The bottom-right corner always shows the pgforge version (dim).
 
 use crate::tui::app::AppState;
 use crate::tui::events::FlashKind;
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 
 const SPINNER: &[char] = &['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧'];
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
+    let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+    let [content_area, version_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(version.chars().count() as u16),
+    ])
+    .areas(area);
+    render_content(f, content_area, state);
+    f.render_widget(
+        Paragraph::new(version).style(Style::default().add_modifier(Modifier::DIM)),
+        version_area,
+    );
+}
+
+fn render_content(f: &mut Frame, area: Rect, state: &AppState) {
     if let Some(e) = &state.last_op_error {
         let text = format!(
             "✗ {} {} failed: {}  [?] details  [esc] clear",
