@@ -18,6 +18,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::CreatedSuccess { .. } => (90, 11),
         Modal::ConnectionString { .. } => (90, 9),
         Modal::ResizeTo { .. } => (66, 11),
+        Modal::ScheduleEdit { .. } => (66, 10),
     };
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
@@ -330,6 +331,75 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                         Span::styled(" cycle preset   ", Style::default().fg(Color::DarkGray)),
                         Span::styled("[Enter]", Style::default().fg(Color::Cyan)),
                         Span::styled(" continue   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                    ]),
+                ]),
+                chunks[3],
+            );
+        }
+        Modal::ScheduleEdit { name, current, new } => {
+            let block = Block::default()
+                .title(format!(" Auto-snapshot — {name} "))
+                .borders(Borders::ALL);
+            f.render_widget(block, area);
+            let inner = area.inner(Margin { horizontal: 1, vertical: 1 });
+            let chunks = Layout::default().direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                ])
+                .split(inner);
+            let fmt = |h: Option<u8>| match h {
+                Some(v) => format!("daily at {:02}:00 local", v),
+                None    => "off — manual snapshot only".to_string(),
+            };
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::styled("Current:", Style::default().fg(Color::DarkGray)),
+                    Line::raw(fmt(*current)),
+                ]),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::styled("New (← →, digits):", Style::default().fg(Color::DarkGray)),
+                    Line::from(vec![
+                        Span::styled("▌ ", Style::default().fg(Color::Cyan)),
+                        Span::styled(
+                            fmt(*new),
+                            if new == current {
+                                Style::default().fg(Color::DarkGray)
+                            } else {
+                                Style::default().fg(Color::Yellow)
+                            },
+                        ),
+                    ]),
+                ]),
+                chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new(Line::styled(
+                    "Needs `pgforge schedule install` to actually fire.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                chunks[2],
+            );
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("[← →]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" cycle hour   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("digits", Style::default().fg(Color::Cyan)),
+                        Span::styled(" type hour   ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("[Bksp]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" off", Style::default().fg(Color::DarkGray)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("[Enter]", Style::default().fg(Color::Cyan)),
+                        Span::styled(" save   ", Style::default().fg(Color::DarkGray)),
                         Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
                         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
                     ]),

@@ -229,6 +229,22 @@ impl AppState {
                     self.modal = Some(Modal::CloneAs { source: n, input: TextField::default() });
                 }
             }
+            KeyCode::Char('t') => {
+                // Auto-snapshot time editor. Reads current value off the
+                // freshly-loaded state.toml (live values aren't on the
+                // ls summary). Empty list → no-op.
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    let root = crate::state::instance::InstanceState::default_state_root();
+                    if let Ok(state) = crate::state::instance::InstanceState::load_under(&root, &n) {
+                        let cur = state.instance.snapshot_hour;
+                        self.modal = Some(Modal::ScheduleEdit {
+                            name: n,
+                            current: cur,
+                            new: cur,
+                        });
+                    }
+                }
+            }
             KeyCode::Char('p') => {
                 // Preset resize wizard — cycle to a different tuning
                 // (tiny/small/medium/large). Preview parameters live
@@ -526,6 +542,20 @@ impl AppState {
                 KeyCode::Enter => Action::Submit,
                 _ => Action::Nothing,
             },
+            Some(Modal::ScheduleEdit { new, .. }) => match k.code {
+                KeyCode::Left  => { *new = bump_snapshot_hour(*new, -1); Action::Nothing }
+                KeyCode::Right | KeyCode::Char(' ') => { *new = bump_snapshot_hour(*new, 1); Action::Nothing }
+                KeyCode::Char(d) if d.is_ascii_digit() => {
+                    let v = d.to_digit(10).unwrap();
+                    let cur = new.unwrap_or(0) as u32;
+                    let next = cur.saturating_mul(10).saturating_add(v).min(23) as u8;
+                    *new = Some(next);
+                    Action::Nothing
+                }
+                KeyCode::Backspace => { *new = None; Action::Nothing }
+                KeyCode::Enter => Action::Submit,
+                _ => Action::Nothing,
+            },
             Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. }) | None => Action::Nothing,
         };
         match action {
@@ -674,6 +704,45 @@ impl AppState {
                     retain_days,
                     snapshot_hour,
                 });
+            }
+            Some(Modal::ScheduleEdit { name, current, new }) => {
+                if current == new {
+                    // No change — just close.
+                    self.modal = None;
+                    return;
+                }
+                // Persist the change to state.toml. This is sync I/O but
+                // small (single TOML write), acceptable in apply_event.
+                let root = crate::state::instance::InstanceState::default_state_root();
+                match crate::state::instance::InstanceState::load_under(&root, &name) {
+                    Ok(mut state) => {
+                        state.instance.snapshot_hour = new;
+                        if let Err(e) = state.save_under(&root) {
+                            self.last_op_error = Some(OpError {
+                                instance: name.clone(),
+                                kind: OpKind::Snapshot,
+                                msg: format!("save state.toml: {e}"),
+                                at: Instant::now(),
+                            });
+                        } else {
+                            let msg = match new {
+                                Some(h) => format!("auto-snapshot for {name}: {:02}:00 local", h),
+                                None    => format!("auto-snapshot for {name}: disabled (manual only)"),
+                            };
+                            self.flash = Some(Flash {
+                                msg, kind: FlashKind::Success, at: Instant::now(),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        self.last_op_error = Some(OpError {
+                            instance: name.clone(),
+                            kind: OpKind::Snapshot,
+                            msg: format!("load state.toml: {e}"),
+                            at: Instant::now(),
+                        });
+                    }
+                }
             }
             Some(Modal::ResizeTo { name, current, new }) => {
                 if current == new {

@@ -195,6 +195,10 @@ pub enum Modal {
     /// small ↔ medium ↔ large; Enter transitions to Confirm. `current`
     /// is shown read-only so the user knows what they're changing from.
     ResizeTo { name: String, current: crate::domain::preset::Preset, new: crate::domain::preset::Preset },
+    /// Change auto-snapshot hour on an existing instance. `new = None`
+    /// means "manual only". Numeric cycler: ← → ±1, digits jump, Backspace
+    /// resets to None.
+    ScheduleEdit { name: String, current: Option<u8>, new: Option<u8> },
 }
 
 /// Map a PgForgeError (or anyhow) into the string carried by
