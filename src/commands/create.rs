@@ -361,6 +361,7 @@ async fn bootstrap_create<E: DockerEngine>(
             snapshot_hour: args.snapshot_hour,
             last_snapshot_at: None,
             last_snapshot_attempt_at: None,
+            full_backup_day: 0,
         },
         created_at: crate::time::now_iso(),
     })

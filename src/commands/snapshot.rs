@@ -158,11 +158,35 @@ pub async fn run_with_engine<E: DockerEngine>(
         )));
     }
 
+    let s = InstanceState::load_under(&state_root, &args.instance)?;
+
+    let weekday_idx: u8 = match jiff::Zoned::now().weekday() {
+        jiff::civil::Weekday::Sunday => 0,
+        jiff::civil::Weekday::Monday => 1,
+        jiff::civil::Weekday::Tuesday => 2,
+        jiff::civil::Weekday::Wednesday => 3,
+        jiff::civil::Weekday::Thursday => 4,
+        jiff::civil::Weekday::Friday => 5,
+        jiff::civil::Weekday::Saturday => 6,
+    };
+    let has_prior_full = SnapshotsFile::load_for(&state_root, &args.instance)
+        .map(|f| f.snapshots.iter().any(|sn| matches!(sn.kind, SnapshotKind::Full)))
+        .unwrap_or(false); // missing snapshots.toml → no prior → treat as first-ever → full
+    let kind = if !has_prior_full || weekday_idx == s.instance.full_backup_day {
+        SnapshotKind::Full
+    } else {
+        SnapshotKind::Diff
+    };
+    let type_flag = match kind {
+        SnapshotKind::Full => "--type=full",
+        SnapshotKind::Diff => "--type=diff",
+    };
+
     let out = docker
         .exec_as(
             &container,
             "postgres",
-            &["pgbackrest", "--stanza=main", "--type=full", "backup"],
+            &["pgbackrest", "--stanza=main", type_flag, "backup"],
         )
         .await?;
     if out.exit_code != 0
@@ -186,7 +210,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let mut file = SnapshotsFile::load_for(&state_root, &args.instance)?;
     let record = SnapshotRecord {
         label: label.clone(),
-        kind: SnapshotKind::Full,
+        kind,
         user_label: args.user_label,
         taken_at: crate::time::now_iso(),
     };

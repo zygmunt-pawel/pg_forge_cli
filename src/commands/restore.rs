@@ -291,6 +291,7 @@ async fn bootstrap_restore<E: DockerEngine>(
             snapshot_hour: source.instance.snapshot_hour,
             last_snapshot_at: None,
             last_snapshot_attempt_at: None,
+            full_backup_day: source.instance.full_backup_day,
         },
         created_at: crate::time::now_iso(),
     })

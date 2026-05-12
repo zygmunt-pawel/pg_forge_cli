@@ -118,6 +118,7 @@ mod tests {
                 snapshot_hour: Some(3),
                 last_snapshot_at: None,
                 last_snapshot_attempt_at: None,
+                full_backup_day: 0,
             },
             created_at: "2026-05-12T10:00:00Z".into(),
         }

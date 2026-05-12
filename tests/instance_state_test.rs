@@ -20,6 +20,7 @@ fn fixture(name: &str) -> InstanceState {
                 snapshot_hour: Some(3),
                 last_snapshot_at: None,
                 last_snapshot_attempt_at: None,
+                full_backup_day: 0,
         },
         created_at: "2026-05-11T08:00:00Z".into(),
     }

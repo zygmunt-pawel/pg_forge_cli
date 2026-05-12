@@ -53,6 +53,13 @@ pub struct Instance {
     /// rest of the day when something is wrong (e.g. S3 unreachable).
     #[serde(default)]
     pub last_snapshot_attempt_at: Option<String>,
+    /// Weekday on which the auto-snapshot runs as `--type=full`. Other days
+    /// use `--type=diff`. Sunday = 0, Monday = 1, ... Saturday = 6.
+    /// Default Sunday. The first-ever snapshot for a stanza is always full
+    /// regardless of this setting (pgbackrest requires a full to seed the
+    /// chain).
+    #[serde(default = "default_full_day")]
+    pub full_backup_day: u8,
 }
 
 fn backup_enabled_default() -> bool {
@@ -65,6 +72,10 @@ fn retain_days_default() -> u32 {
 
 fn snapshot_hour_default() -> Option<u8> {
     Some(3)
+}
+
+fn default_full_day() -> u8 {
+    0
 }
 
 impl Instance {
@@ -83,6 +94,16 @@ impl Instance {
         if h > 23 {
             return Err(PgForgeError::Anyhow(anyhow::anyhow!(
                 "snapshot_hour must be 0..=23, got {h}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Full-backup weekday must be in 0..=6 (Sun=0 .. Sat=6).
+    pub fn validate_full_backup_day(d: u8) -> crate::error::Result<()> {
+        if d > 6 {
+            return Err(crate::error::PgForgeError::Anyhow(anyhow::anyhow!(
+                "full_backup_day must be 0..=6 (Sun=0..Sat=6), got {d}"
             )));
         }
         Ok(())
