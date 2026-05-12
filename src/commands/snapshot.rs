@@ -202,7 +202,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let label = parse_backup_label(&out.stdout).ok_or_else(|| {
         PgForgeError::Anyhow(anyhow::anyhow!(
             "pgbackrest backup succeeded but no label found in stdout — output: {}",
-            out.stdout
+            redact_pgbackrest_output(&out.stdout)
         ))
     })?;
 
