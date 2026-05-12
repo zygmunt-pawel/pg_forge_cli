@@ -116,7 +116,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     // pgbackrest.conf carries S3 access_key + secret_key.
     crate::util::fs::write_secret(
         &pgbackrest_conf,
-        generate_pgbackrest_conf(&args.source, &s3, 30),
+        generate_pgbackrest_conf(&args.source, &s3, source.instance.retain_days),
     )?;
     let canonical_target = match args.target_time.as_deref() {
         Some(s) => Some(crate::time::canonicalize_target_time(s)?),
