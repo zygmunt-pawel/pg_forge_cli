@@ -95,9 +95,11 @@ pub fn install() -> Result<PathBuf> {
     // "Input/output error" / "Could not find domain" / "Bootstrap failed: 5"
     // because gui/<uid> is unreachable without a GUI session. The plist is
     // still on disk and launchd will pick it up at the next user login.
-    // (Task 3.4 will prepend a defensive best-effort bootout here.)
     let domain = format!("gui/{}", uid_or_501());
     let plist_str = plist_path.to_string_lossy();
+    // Idempotent reinstall: bootout any prior agent of the same label so
+    // bootstrap doesn't fail with "service already loaded". Best effort.
+    let _ = run_launchctl(&["bootout", &domain, &plist_str]);
     let out = run_launchctl(&["bootstrap", &domain, &plist_str])?;
     if out.status.success() {
         return Ok(plist_path);
