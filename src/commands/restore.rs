@@ -270,6 +270,7 @@ async fn bootstrap_restore<E: DockerEngine>(
         .wait_for_container_running(id, std::time::Duration::from_secs(30))
         .await?;
     crate::docker::wait::wait_for_pg_ready(docker, id, 600).await?;
+    crate::docker::wait::wait_for_recovery_end(docker, id, 600).await?;
 
     Ok(InstanceState {
         instance: Instance {
