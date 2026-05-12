@@ -420,6 +420,10 @@ mod tests {
             // Mock: delegate to exec, ignoring the user argument.
             self.exec(container, cmd).await
         }
+        async fn exec_with_stdin(&self, container: &str, cmd: &[&str], _stdin_data: &str) -> crate::error::Result<crate::docker::engine::ExecOutput> {
+            // Mock: delegate to exec, ignoring stdin_data.
+            self.exec(container, cmd).await
+        }
         async fn stop_container(&self, _: &str) -> crate::error::Result<()> {
             self.calls.lock().unwrap().push("stop_container");
             Ok(())

@@ -170,6 +170,10 @@ mod tests {
             // Mock: delegate to exec, ignoring the user argument.
             self.exec(container, cmd).await
         }
+        async fn exec_with_stdin(&self, container: &str, cmd: &[&str], _stdin_data: &str) -> Result<ExecOutput> {
+            // Mock: delegate to exec, ignoring stdin_data.
+            self.exec(container, cmd).await
+        }
         async fn stop_container(&self, name: &str) -> Result<()> {
             self.ops.lock().unwrap().push(format!("stop({name})"));
             Ok(())

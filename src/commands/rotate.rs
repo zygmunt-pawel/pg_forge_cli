@@ -198,6 +198,11 @@ pub async fn run_with_engine<E: DockerEngine>(
     // created before Plan 3.5 only have `pgbackrest` — `pgforge clone` needs
     // a non-SUPERUSER pgreplica role exposed via host replication. CREATE
     // ROLE IF NOT EXISTS isn't supported for roles, so use a DO block.
+    //
+    // SQL is fed via stdin so the password never appears in the argv of the
+    // exec'd process and is never visible in shell interpolation. The standard
+    // SQL single-quote escape ('' → ') is preserved as defense-in-depth in
+    // case the password alphabet ever gains single-quote characters.
     if instance.backup_enabled {
         let escaped = instance.pgbackrest_password.replace('\'', "''");
         let sql = format!(
@@ -208,7 +213,11 @@ pub async fn run_with_engine<E: DockerEngine>(
              END $$;"
         );
         let out = docker
-            .exec(&id, &["su", "-", "postgres", "-c", &format!("psql -c \"{sql}\"")])
+            .exec_with_stdin(
+                &id,
+                &["su", "-", "postgres", "-c", "psql"],
+                &sql,
+            )
             .await?;
         if out.exit_code != 0 {
             return Err(PgForgeError::Docker(format!(

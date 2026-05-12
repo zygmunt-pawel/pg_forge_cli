@@ -95,6 +95,16 @@ pub trait DockerEngine: Send + Sync {
     /// some PAM stacks.
     async fn exec_as(&self, container: &str, user: &str, cmd: &[&str]) -> Result<ExecOutput>;
 
+    /// Execute `cmd` inside `container` and feed `stdin_data` to the process.
+    /// Use when piping SQL into psql, etc. — avoids shell interpolation
+    /// hazards that would arise if the data were passed via `-c "..."` args.
+    async fn exec_with_stdin(
+        &self,
+        container: &str,
+        cmd: &[&str],
+        stdin_data: &str,
+    ) -> Result<ExecOutput>;
+
     /// Stop a running container (SIGTERM, grace period 10s, then SIGKILL).
     async fn stop_container(&self, id: &str) -> Result<()>;
 
