@@ -8,7 +8,8 @@ RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
 **Plan 2 (snapshot + restore PITR) — implemented.**  
 **Plan 3 (clone via pg_basebackup) — implemented.**  
 **Plan 3.5 (security + reliability hardening) — implemented.**  
-Upgrade and TUI come in Plans 4-5.
+**Plan 4 (upgrade, rotate, ls, status, --no-backup) — implemented.**  
+TUI dashboard comes in Plan 5.
 
 ## Quick start
 
@@ -39,11 +40,33 @@ Upgrade and TUI come in Plans 4-5.
        --preset tiny \
        --version 18
    ```
+   For local dev / testing without S3, pass `--no-backup`:
+   ```bash
+   PGFORGE_APP_PASSWORD=pw ./target/release/pgforge create \
+       --name dev --preset tiny --version 18 --no-backup
+   ```
+   No-backup instances run hardened postgres but don't push WAL anywhere
+   and refuse `snapshot` / `clone` / `restore`.
+
 5. Connect:
    ```bash
    psql "postgresql://leads:changeme@127.0.0.1:<port>/billing"
    ```
    (The port is printed at the end of `create` and saved in `~/.local/share/pgforge/instances/billing/state.toml`.)
+
+## Day-2 operations
+
+```bash
+pgforge ls                                # list managed instances
+pgforge status --name billing             # cpu / mem / connections / sizes
+pgforge snapshot --name billing           # on-demand full backup to S3
+pgforge snapshots --name billing          # backup list + PITR window
+pgforge restore --source billing --as billing-recovery
+pgforge clone --source billing --as billing-staging
+pgforge reconfigure --name billing        # regenerate pg_hba + pg_ctl reload
+pgforge rotate --name billing             # recreate container, keep data volume
+pgforge upgrade --name billing --to 19    # pg_upgrade with auto pre-snapshot
+```
 
 ## Snapshots and restore
 
@@ -121,14 +144,32 @@ See `docs/plans/2026-05-11-foundation-and-create.md` for the implementation
 plan that built this scaffold, and the upcoming `2026-XX-XX-*.md` plans for
 snapshot / restore / clone / upgrade / TUI.
 
+## Migration from pre-Plan-4 instances
+
+Plan 4 fixed a Plan-1-era bug where `/etc/postgresql/postgresql.conf` and
+`/etc/postgresql/pg_hba.conf` were bind-mounted but ignored — postgres was
+running on all-default config (archive_mode=off, default tuning, no
+hardened pg_hba). To pick up the fix on existing instances without losing
+data:
+
+```bash
+pgforge rotate --name billing
+```
+
+`rotate` stops + removes the container, regenerates configs, recreates
+the container on the SAME data volume with current cmd flags
+(`-c config_file=… -c hba_file=…`). Plus it ensures the post-Plan-3.5
+`pgreplica` role exists for clone-source instances.
+
 ## Caveats
 
 - **macOS host**: Docker Desktop and OrbStack run containers in a Linux VM.
   fsync semantics through that VM are weaker than bare-metal Linux. pgforge
-  sets `wal_sync_method = fsync_writethrough` to force `F_FULLFSYNC`, but
-  true RDS-grade durability is not achievable on macOS — use a UPS for Mac
-  mini deployments and rely on the 60-second S3 backup window as your real
-  durability guarantee.
+  uses `wal_sync_method = fdatasync` (the only Linux-valid choice — postgres
+  runs inside a Linux container regardless of host OS), so the F_FULLFSYNC
+  path doesn't apply. True RDS-grade durability is not achievable on macOS
+  — use a UPS for Mac mini deployments and rely on the 60-second S3 backup
+  window as your real durability guarantee.
 - **No HA**: pgforge is intentionally single-host, no replication, no
   failover. Same model as RDS Single-AZ.
 - **Restored instances and pgbackrest stanza**: `pgforge restore`
