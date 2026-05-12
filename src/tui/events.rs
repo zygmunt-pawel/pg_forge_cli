@@ -153,10 +153,13 @@ pub enum Modal {
     },
     /// Shown after a successful `pgforge create` from the TUI wizard.
     /// Contains the full connection URI with the generated password
-    /// embedded — this is the user's one well-marked opportunity to
-    /// copy it (the password lives in state.toml afterwards, but the
-    /// URI is never rebuilt-and-displayed for them again).
+    /// embedded — user selects with mouse and Cmd+C to copy.
     CreatedSuccess { name: String, uri: String },
+    /// Plain "show the URI on screen" modal, opened by `[Enter]` on the
+    /// instance list. Same render as CreatedSuccess but a different
+    /// header ("Connection string" vs "Instance ready"), used purely
+    /// for retrieval — user selects with mouse + Cmd+C to copy.
+    ConnectionString { name: String, uri: String },
 }
 
 /// Map a PgForgeError (or anyhow) into the string carried by

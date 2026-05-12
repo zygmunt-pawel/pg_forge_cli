@@ -60,21 +60,22 @@ async fn run_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         for (encoded, kind) in std::mem::take(&mut state.pending_ops) {
             ops::spawn(kind, encoded, tx.clone(), None);
         }
-        let clipboard_requests = std::mem::take(&mut state.pending_clipboard);
-        for n in clipboard_requests {
-            match do_clipboard(&n) {
-                Ok(()) => {
-                    state.flash = Some(crate::tui::events::Flash {
-                        msg: format!("copied connection string for {n}"),
-                        kind: crate::tui::events::FlashKind::Success,
-                        at: std::time::Instant::now(),
-                    });
+        // [Enter] on the instance list pushes a name into pending_clipboard;
+        // we open a Modal::ConnectionString with the URI text instead of
+        // trying to copy it via OSC52 / arboard. Terminal-clipboard support
+        // varies (iTerm2 default-off, tmux passthrough, …) so showing the
+        // URI and letting the user select-with-mouse + Cmd+C is the
+        // simplest "it just works" path.
+        for n in std::mem::take(&mut state.pending_clipboard) {
+            match build_post_create_uri(&n) {
+                Ok(uri) => {
+                    state.modal = Some(crate::tui::events::Modal::ConnectionString { name: n, uri });
                 }
                 Err(e) => {
                     state.last_op_error = Some(crate::tui::events::OpError {
                         instance: n,
                         kind: crate::tui::events::OpKind::Clipboard,
-                        msg: e.to_string(),
+                        msg: format!("load state for connection string: {e}"),
                         at: std::time::Instant::now(),
                     });
                 }
@@ -109,13 +110,10 @@ fn build_post_create_uri(instance_name: &str) -> Result<String> {
     Ok(clipboard::build_connection_uri(&st))
 }
 
-fn do_clipboard(instance_name: &str) -> Result<()> {
-    let root = crate::state::instance::InstanceState::default_state_root();
-    let st = crate::state::instance::InstanceState::load_under(&root, instance_name)?;
-    let uri = clipboard::build_connection_uri(&st);
-    clipboard::copy_to_clipboard(&uri)?;
-    Ok(())
-}
+// `do_clipboard` previously fired OSC52 + arboard for [Enter]; removed
+// in favour of showing the URI in a modal (Modal::ConnectionString).
+// The clipboard::copy_to_clipboard helper is kept for potential future
+// CLI hooks but no longer wired into the TUI keymap.
 
 fn spawn_key_reader(tx: mpsc::UnboundedSender<Event>) {
     tokio::task::spawn_blocking(move || {

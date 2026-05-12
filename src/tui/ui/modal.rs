@@ -16,6 +16,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::Snapshots { .. } => (80, 20),
         Modal::Create { .. } => (72, 17),
         Modal::CreatedSuccess { .. } => (90, 11),
+        Modal::ConnectionString { .. } => (90, 9),
     };
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
@@ -194,15 +195,42 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             );
             f.render_widget(
                 Paragraph::new(Line::styled(
-                    "After dismiss, retrieve again with [Enter] on the instance row.",
+                    "Retrieve again later with [↵] on the instance row.",
                     Style::default().fg(Color::DarkGray),
                 )).wrap(Wrap { trim: true }),
                 chunks[3],
             );
             f.render_widget(
-                Paragraph::new("[c]/[Enter] copy to clipboard   [Esc] dismiss")
+                Paragraph::new("Select with mouse + Cmd+C / Ctrl+C to copy   [Esc] dismiss")
                     .style(Style::default().fg(Color::DarkGray)),
                 chunks[4],
+            );
+        }
+        Modal::ConnectionString { name, uri } => {
+            let block = Block::default()
+                .title(format!(" Connection string — {name} "))
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::Cyan));
+            f.render_widget(block, area);
+            let inner = area.inner(Margin { horizontal: 1, vertical: 1 });
+            let chunks = Layout::default().direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2), // URI line
+                    Constraint::Length(1), // spacer
+                    Constraint::Min(1),    // footer
+                ])
+                .split(inner);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("▌ ", Style::default().fg(Color::Cyan)),
+                    Span::styled(uri.as_str(), Style::default().fg(Color::Yellow)),
+                ])),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new("Select with mouse + Cmd+C / Ctrl+C to copy   [Esc] dismiss")
+                    .style(Style::default().fg(Color::DarkGray)),
+                chunks[2],
             );
         }
     }

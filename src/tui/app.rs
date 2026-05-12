@@ -394,21 +394,12 @@ impl AppState {
                     _ => Action::Nothing,
                 }
             }
-            Some(Modal::CreatedSuccess { uri, .. }) => match k.code {
-                // [c] / [Enter] copies the URI; the modal stays so the user
-                // can still see it and explicitly Esc.
-                KeyCode::Char('c') | KeyCode::Enter => {
-                    let to_copy = uri.clone();
-                    let _ = crate::tui::clipboard::copy_to_clipboard(&to_copy);
-                    self.flash = Some(Flash {
-                        msg: "copied connection string to clipboard".into(),
-                        kind: FlashKind::Success,
-                        at: Instant::now(),
-                    });
-                    Action::Nothing
-                }
-                _ => Action::Nothing,
-            },
+            Some(Modal::CreatedSuccess { .. }) | Some(Modal::ConnectionString { .. }) => {
+                // No interaction beyond Esc (handled at top of this fn).
+                // User selects URI text with mouse and Cmd+C / Ctrl+C —
+                // every terminal supports that, no escape-sequence games.
+                Action::Nothing
+            }
             Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. }) | None => Action::Nothing,
         };
         match action {
