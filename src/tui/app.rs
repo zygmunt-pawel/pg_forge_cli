@@ -21,6 +21,8 @@ pub struct AppState {
     pub now: Instant,
     pub should_quit: bool,
     pub pending_ops: Vec<(String, OpKind)>,
+    pub pending_clipboard: Vec<String>,
+    pub refresh_requests: Vec<String>,
 }
 
 impl Default for AppState {
@@ -38,6 +40,8 @@ impl Default for AppState {
             now: Instant::now(),
             should_quit: false,
             pending_ops: Vec::new(),
+            pending_clipboard: Vec::new(),
+            refresh_requests: Vec::new(),
         }
     }
 }
@@ -98,6 +102,7 @@ impl AppState {
                             kind: FlashKind::Success,
                             at: Instant::now(),
                         });
+                        self.refresh_requests.push(instance.clone());
                     }
                     Err(msg) => {
                         self.last_op_error = Some(OpError {
@@ -181,6 +186,11 @@ impl AppState {
                     if let Some(v) = self.snapshots.get(&n).cloned() {
                         self.modal = Some(Modal::Snapshots { name: n, view: v });
                     }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(n) = self.selected_name().map(str::to_string) {
+                    self.pending_clipboard.push(n);
                 }
             }
             _ => {}
@@ -843,5 +853,21 @@ mod tests {
         });
         s.apply_event(key(KeyCode::Char('y')));
         assert_eq!(s.pending_ops, vec![("alpha:gamma@2026-05-12T10:00:00Z".into(), OpKind::Restore)]);
+    }
+
+    #[test]
+    fn key_enter_enqueues_clipboard_copy() {
+        let mut s = AppState::default();
+        s.instances = vec![row("alpha")];
+        s.apply_event(key(KeyCode::Enter));
+        assert_eq!(s.pending_clipboard, vec!["alpha".to_string()]);
+    }
+
+    #[test]
+    fn op_finished_ok_enqueues_refresh_request() {
+        let mut s = AppState::default();
+        s.in_progress.insert("alpha".into(), RunningOp { kind: OpKind::Snapshot, started_at: Instant::now() });
+        s.apply_event(Event::OpFinished { instance: "alpha".into(), kind: OpKind::Snapshot, result: Ok(()) });
+        assert_eq!(s.refresh_requests, vec!["alpha".to_string()]);
     }
 }

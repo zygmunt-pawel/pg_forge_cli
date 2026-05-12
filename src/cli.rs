@@ -110,9 +110,12 @@ fn parse_preset(s: &str) -> Result<Preset, String> {
 pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         None => {
-            // TUI is added in Plan 5. Until then: print help.
-            println!("pgforge: TUI not yet implemented (Plan 5). Run `pgforge --help`.");
-            Ok(())
+            use std::io::IsTerminal;
+            if !std::io::stdout().is_terminal() {
+                println!("pgforge: stdout is not a terminal. Run `pgforge --help` for commands.");
+                return Ok(());
+            }
+            crate::tui::run().await
         }
         Some(Command::Snapshot { name, label }) => {
             let rec = crate::commands::snapshot::run(crate::commands::snapshot::SnapshotArgs {
