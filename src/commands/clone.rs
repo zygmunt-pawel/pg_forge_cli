@@ -273,6 +273,7 @@ async fn bootstrap_clone<E: DockerEngine>(
         .await?;
     // pg_basebackup of a small DB takes seconds; larger ones minutes. Allow 10 min.
     wait_for_pg_ready(docker, id, 600).await?;
+    crate::docker::wait::wait_for_recovery_end(docker, id, 600).await?;
 
     // Create the pgbackrest stanza on the clone's OWN repo path so archive_command
     // can begin pushing WAL. The cloned cluster has a new system identifier vs.
