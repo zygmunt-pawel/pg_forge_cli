@@ -192,3 +192,99 @@ async fn run_with_engine_errors_when_destination_exists_without_force() {
     // The pre-existing file must be untouched.
     assert_eq!(std::fs::read(&existing).unwrap(), b"old");
 }
+
+use pgforge::commands::create::{run_with_engine as create_run, CreateArgs};
+use pgforge::commands::destroy::{run_with_engine as destroy_run, DestroyArgs};
+use pgforge::config::global::GlobalConfig;
+use pgforge::docker::bollard_engine::BollardEngine;
+
+#[tokio::test]
+async fn dump_e2e_produces_a_restorable_file() {
+    if std::env::var("PGFORGE_E2E").ok().as_deref() != Some("1") {
+        eprintln!("skipping: set PGFORGE_E2E=1 to run");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let state_root = tmp.path().to_path_buf();
+    let docker = BollardEngine::connect().expect("docker reachable");
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let name = format!("pgfdump_e2e_{suffix}");
+
+    // 1. Create a throwaway --no-backup instance (no S3 needed for a dump test).
+    create_run(
+        CreateArgs {
+            name: name.clone(),
+            preset: Preset::Tiny,
+            pg_version: 18,
+            app_user: "leads".into(),
+            app_password: "pw".into(),
+            pgbackrest_password: String::new(),
+            override_state_root: Some(state_root.clone()),
+            no_backup: true,
+            retain_days: 30,
+            snapshot_hour: None,
+        },
+        &docker,
+        state_root.clone(),
+        GlobalConfig::default(),
+        None,
+    )
+    .await
+    .expect("create");
+
+    // 2. Dump it.
+    let out = tmp.path().join("e2e.dump");
+    let path = run_with_engine(
+        DumpArgs {
+            name: name.clone(),
+            out: Some(out.clone()),
+            force: false,
+            keep: None,
+            timeout_secs: 600,
+            override_state_root: Some(state_root.clone()),
+        },
+        &docker,
+        state_root.clone(),
+    )
+    .await
+    .expect("dump");
+
+    // 3. Verify: file exists, non-empty, PGDMP header, 0600, no leftover .partial,
+    //    and pg_restore --list can read it.
+    assert_eq!(path, out);
+    let meta = std::fs::metadata(&out).expect("dump file exists");
+    assert!(meta.len() > 0, "dump must be non-empty");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().to_string_lossy().contains(".partial"))
+        .collect();
+    assert!(leftovers.is_empty(), "no .partial should remain: {leftovers:?}");
+    let listed = std::process::Command::new("pg_restore")
+        .arg("--list")
+        .arg(&out)
+        .output()
+        .expect("pg_restore on PATH");
+    assert!(listed.status.success(), "pg_restore --list must accept the dump");
+
+    // 4. Cleanup.
+    destroy_run(
+        DestroyArgs {
+            name: name.clone(),
+            delete_backups: false,
+            override_state_root: Some(state_root.clone()),
+        },
+        &docker,
+        state_root.clone(),
+    )
+    .await
+    .expect("destroy");
+}
