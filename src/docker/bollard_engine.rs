@@ -485,7 +485,6 @@ impl DockerEngine for BollardEngine {
         open.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
             open.mode(0o600);
         }
         let mut file = open.open(dest).await.map_err(|e| PgForgeError::Io {
