@@ -42,6 +42,24 @@ pub enum Command {
         #[arg(long)]
         name: String,
     },
+    /// Dump a live instance's database to a portable .dump file on the server.
+    Dump {
+        /// Instance name.
+        #[arg(long)]
+        name: String,
+        /// Full output file path. Default: $HOME/pgforge-dumps/<name>-<ts>.dump
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Overwrite the destination if it already exists.
+        #[arg(long)]
+        force: bool,
+        /// After a successful dump, keep only the newest N dumps for this instance.
+        #[arg(long)]
+        keep: Option<usize>,
+        /// Hard cap on the dump, in seconds.
+        #[arg(long, default_value_t = 1800)]
+        timeout: u64,
+    },
     /// List all managed instances with status.
     Ls,
     /// Live metrics for one instance: CPU, memory, connections, sizes.
@@ -259,6 +277,21 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 Ok(_) => {} // no snaps + no window — we already said "No snapshots".
                 Err(e) => eprintln!("(could not derive PITR window: {e})"),
             }
+            Ok(())
+        }
+        Some(Command::Dump { name, out, force, keep, timeout }) => {
+            let path = crate::commands::dump::run(crate::commands::dump::DumpArgs {
+                name,
+                out,
+                force,
+                keep,
+                timeout_secs: timeout,
+                override_state_root: None,
+            })
+            .await?;
+            // stdout: exactly the path, nothing else — the operator's `make`
+            // glue consumes this line for `scp`.
+            println!("{}", path.display());
             Ok(())
         }
         Some(Command::Restore {
