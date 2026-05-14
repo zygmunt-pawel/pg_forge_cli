@@ -257,7 +257,7 @@ pub async fn run_with_engine<E: DockerEngine>(
 
     // state.save_under is OUTSIDE the cleanup wrap — a fully-bootstrapped
     // container shouldn't be destroyed because of a local filesystem error.
-    if let Err(e) = state.save_under(&state_root) {
+    if let Err(e) = state.save_under_locked(&state_root) {
         tracing::error!(
             target: "pgforge::create",
             "instance {} bootstrapped successfully but state.toml save failed: {e}. \

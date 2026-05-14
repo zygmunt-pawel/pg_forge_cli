@@ -74,6 +74,106 @@ fn list_returns_empty_when_state_root_missing() {
 }
 
 #[test]
+fn update_under_applies_and_persists_mutation() {
+    let dir = TempDir::new().unwrap();
+    let state_root = dir.path();
+    fixture("billing").save_under(state_root).unwrap();
+    let returned = InstanceState::update_under(state_root, "billing", |s| {
+        s.instance.snapshot_hour = Some(7);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(returned.instance.snapshot_hour, Some(7));
+    let reloaded = InstanceState::load_under(state_root, "billing").unwrap();
+    assert_eq!(reloaded.instance.snapshot_hour, Some(7));
+}
+
+#[test]
+fn update_under_serializes_concurrent_mutations_without_lost_updates() {
+    use std::thread;
+    // Plain load->mutate->save races: two writers both read N, both write N+1,
+    // one increment is lost. update_under re-loads inside the state-root lock,
+    // so every increment lands.
+    let dir = TempDir::new().unwrap();
+    let state_root = dir.path().to_path_buf();
+    let mut base = fixture("billing");
+    base.instance.retain_days = 0;
+    base.save_under(&state_root).unwrap();
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let root = state_root.clone();
+        handles.push(thread::spawn(move || {
+            InstanceState::update_under(&root, "billing", |s| {
+                s.instance.retain_days += 1;
+                Ok(())
+            })
+            .unwrap();
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let final_state = InstanceState::load_under(&state_root, "billing").unwrap();
+    assert_eq!(
+        final_state.instance.retain_days, 8,
+        "all 8 concurrent increments must survive — none clobbered"
+    );
+}
+
+#[test]
+fn backup_failing_false_when_never_ran() {
+    let mut i = fixture("x").instance;
+    i.last_snapshot_at = None;
+    i.last_snapshot_attempt_at = None;
+    assert!(!i.backup_failing());
+}
+
+#[test]
+fn backup_failing_false_after_successful_snapshot() {
+    // On success snapshot.rs writes both timestamps to the same value.
+    let mut i = fixture("x").instance;
+    i.last_snapshot_at = Some("2026-05-14T03:00:00Z".into());
+    i.last_snapshot_attempt_at = Some("2026-05-14T03:00:00Z".into());
+    assert!(!i.backup_failing());
+}
+
+#[test]
+fn backup_failing_true_when_attempt_newer_than_last_success() {
+    let mut i = fixture("x").instance;
+    i.last_snapshot_at = Some("2026-05-13T03:00:00Z".into());
+    i.last_snapshot_attempt_at = Some("2026-05-14T03:05:00Z".into());
+    assert!(i.backup_failing(), "a failed attempt after the last good backup means backups are failing");
+}
+
+#[test]
+fn backup_failing_true_when_attempted_but_never_succeeded() {
+    let mut i = fixture("x").instance;
+    i.last_snapshot_at = None;
+    i.last_snapshot_attempt_at = Some("2026-05-14T03:05:00Z".into());
+    assert!(i.backup_failing());
+}
+
+#[test]
+fn backup_failing_false_when_backups_disabled() {
+    let mut i = fixture("x").instance;
+    i.backup_enabled = false;
+    i.last_snapshot_at = None;
+    i.last_snapshot_attempt_at = Some("2026-05-14T03:05:00Z".into());
+    assert!(!i.backup_failing(), "a --no-backup instance is never 'failing'");
+}
+
+#[test]
+fn save_under_locked_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let state_root = dir.path();
+    fixture("billing").save_under_locked(state_root).unwrap();
+    let loaded = InstanceState::load_under(state_root, "billing").unwrap();
+    assert_eq!(loaded.instance.name, "billing");
+}
+
+#[test]
 fn load_legacy_state_without_backup_enabled_defaults_to_true() {
     // Instances created before P4A-1 don't have the backup_enabled field in
     // their state.toml. Loading them must default to true (pre-P4 instances

@@ -23,9 +23,15 @@ fn entrypoint_restores_latest_when_no_target_time() {
     // When no target time, --type=time and --target=$PGFORGE_TARGET must not appear.
     assert!(!script.contains("--type=time"), "no --type=time without target");
     assert!(!script.contains("--target=$PGFORGE_TARGET"), "no --target var without target");
-    // Critical: must auto-promote, otherwise PG sits in paused recovery.
-    assert!(script.contains("--target-action=promote"),
-            "default restore must include --target-action=promote, got:\n{script}");
+    // Must auto-promote, otherwise PG sits in recovery — but pgbackrest
+    // REJECTS --target-action unless --type is also given ("option
+    // 'target-action' not valid without option 'type'"). A no-target
+    // restore must omit it entirely: postgres promotes on its own once
+    // archive recovery reaches end-of-WAL (pgbackrest writes recovery.signal,
+    // not standby.signal).
+    assert!(!script.contains("--target-action"),
+            "no-target restore must not pass --target-action — pgbackrest \
+             errors without a matching --type, got:\n{script}");
 }
 
 #[test]
@@ -90,4 +96,29 @@ fn entrypoint_execs_official_postgres_entrypoint_with_bindmount_config_flags() {
 fn entrypoint_is_a_shebang_script() {
     let script = generate_restore_entrypoint(None);
     assert!(script.starts_with("#!/"));
+}
+
+#[test]
+fn no_target_entrypoint_does_not_reference_unbound_target_var() {
+    // The script runs under `set -u`. restore.rs only injects the
+    // PGFORGE_TARGET container env var when a --target-time is given, so the
+    // no-target script must not reference $PGFORGE_TARGET at all — otherwise
+    // it aborts with "unbound variable" before pgbackrest ever runs.
+    let s = generate_restore_entrypoint(None);
+    assert!(
+        !s.contains("PGFORGE_TARGET"),
+        "no-target restore script must not reference PGFORGE_TARGET \
+         (unbound under set -u):\n{s}"
+    );
+}
+
+#[test]
+fn target_entrypoint_passes_target_var_into_su_environment() {
+    // `su -` resets the environment, so the target value must be explicitly
+    // carried into the postgres user's command — but only in the target case.
+    let s = generate_restore_entrypoint(Some("2026-05-12T14:00:00Z"));
+    assert!(
+        s.contains("PGFORGE_TARGET=$PGFORGE_TARGET pgbackrest"),
+        "target restore must forward PGFORGE_TARGET into the su command:\n{s}"
+    );
 }

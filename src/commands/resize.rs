@@ -33,8 +33,9 @@ pub async fn run(args: ResizeArgs) -> Result<(Preset, Preset)> {
         .unwrap_or_else(InstanceState::default_state_root);
 
     Instance::validate_name(&args.name)?;
-    let mut state = InstanceState::load_under(&state_root, &args.name)?;
-    let old_preset = state.instance.preset;
+    let old_preset = InstanceState::load_under(&state_root, &args.name)?
+        .instance
+        .preset;
     if old_preset == args.new_preset {
         return Err(PgForgeError::Anyhow(anyhow::anyhow!(
             "{:?} is already on preset {:?} — nothing to resize",
@@ -43,8 +44,10 @@ pub async fn run(args: ResizeArgs) -> Result<(Preset, Preset)> {
         )));
     }
 
-    state.instance.preset = args.new_preset;
-    state.save_under(&state_root)?;
+    InstanceState::update_under(&state_root, &args.name, |s| {
+        s.instance.preset = args.new_preset;
+        Ok(())
+    })?;
 
     let rotate_args = crate::commands::rotate::RotateArgs {
         name: args.name.clone(),
@@ -55,8 +58,10 @@ pub async fn run(args: ResizeArgs) -> Result<(Preset, Preset)> {
         Err(e) => {
             // Best-effort rollback so state.toml doesn't claim a preset
             // the container never actually applied.
-            state.instance.preset = old_preset;
-            let _ = state.save_under(&state_root);
+            let _ = InstanceState::update_under(&state_root, &args.name, |s| {
+                s.instance.preset = old_preset;
+                Ok(())
+            });
             Err(e)
         }
     }

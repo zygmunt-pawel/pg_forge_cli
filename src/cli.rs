@@ -427,9 +427,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 crate::domain::instance::Instance::validate_snapshot_hour(h)?;
             }
             let root = crate::state::instance::InstanceState::default_state_root();
-            let mut state = crate::state::instance::InstanceState::load_under(&root, &name)?;
-            state.instance.snapshot_hour = if off { None } else { hour };
-            state.save_under(&root)?;
+            let state = crate::state::instance::InstanceState::update_under(&root, &name, |s| {
+                s.instance.snapshot_hour = if off { None } else { hour };
+                Ok(())
+            })?;
             println!("Updated {name}: snapshot_hour = {:?}", state.instance.snapshot_hour);
             Ok(())
         }

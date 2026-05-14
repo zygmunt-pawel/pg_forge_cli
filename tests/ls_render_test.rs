@@ -7,8 +7,25 @@ fn row(name: &str, backups: bool, running: bool) -> InstanceSummary {
         preset_label: "tiny".into(),
         host_port: 5433,
         backup_enabled: backups,
+        backup_failing: false,
         running,
     }
+}
+
+fn failing_row(name: &str) -> InstanceSummary {
+    InstanceSummary {
+        backup_failing: true,
+        ..row(name, true, true)
+    }
+}
+
+#[test]
+fn render_table_marks_failing_backups() {
+    let s = render_table(&[failing_row("billing")]);
+    assert!(
+        s.contains("FAILING"),
+        "an instance whose backups are failing must be flagged, got:\n{s}"
+    );
 }
 
 #[test]

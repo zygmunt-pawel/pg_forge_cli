@@ -55,3 +55,20 @@ fn conf_uses_pgbackrest_archive_command() {
     let conf = generate_postgresql_conf(Preset::Tiny, Platform::Linux);
     assert!(conf.contains("archive_command = 'pgbackrest --stanza=main archive-push %p'"));
 }
+
+#[test]
+fn conf_with_archive_false_disables_archive_mode() {
+    // Restored instances are rendered with archiving disabled so postgres
+    // never pushes WAL (on a new timeline) into the source's stanza.
+    use pgforge::postgres::conf::generate_postgresql_conf_with_archive;
+    let conf = generate_postgresql_conf_with_archive(Preset::Tiny, Platform::Linux, false);
+    assert!(
+        conf.contains("archive_mode = off"),
+        "with_archive=false must disable archive_mode:\n{conf}"
+    );
+    assert!(!conf.contains("archive_mode = on"));
+    assert!(
+        !conf.contains("archive-push"),
+        "no archive_command should be emitted when archiving is disabled"
+    );
+}

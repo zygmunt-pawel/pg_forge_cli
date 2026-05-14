@@ -80,4 +80,32 @@ impl InstanceState {
     pub fn exists_under(state_root: &Path, name: &str) -> bool {
         Self::file_under(state_root, name).exists()
     }
+
+    /// Safe load-modify-write primitive. Acquires the state-root lock,
+    /// re-loads the instance from disk, applies `f`, and atomically saves the
+    /// result — all under the lock. Re-loading inside the lock is what
+    /// prevents the lost-update race: a concurrent writer (the launchd
+    /// snapshot tick, the TUI, another CLI invocation) can't have its update
+    /// silently clobbered.
+    ///
+    /// The lock is held only for the fast file I/O — never pass a closure
+    /// that does slow work (docker, network).
+    pub fn update_under<F>(state_root: &Path, name: &str, f: F) -> Result<Self>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        let _lock = crate::util::fs::LockedStateRoot::acquire(state_root)?;
+        let mut state = Self::load_under(state_root, name)?;
+        f(&mut state)?;
+        state.save_under(state_root)?;
+        Ok(state)
+    }
+
+    /// Like `save_under`, but holds the state-root lock for the write. Use
+    /// when persisting a freshly-built instance (create/clone/restore) so the
+    /// save can't interleave with another writer.
+    pub fn save_under_locked(&self, state_root: &Path) -> Result<()> {
+        let _lock = crate::util::fs::LockedStateRoot::acquire(state_root)?;
+        self.save_under(state_root)
+    }
 }

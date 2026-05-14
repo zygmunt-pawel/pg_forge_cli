@@ -24,6 +24,16 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             Some(p)              => Span::raw(format!("{:>5.1}%", p)),
             None                 => Span::styled("    -%", Style::default().fg(Color::DarkGray)),
         };
+        // Loud red badge when this instance's backups are failing — the
+        // operator must be able to spot a silent backup outage at a glance.
+        let backup_span = if inst.backup_failing {
+            Span::styled(
+                " ⚠BACKUP",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        };
         let line = Line::from(vec![
             Span::raw(format!("{:<16} ", trim(&inst.name, 16))),
             Span::raw(format!("PG{:<2} ", inst.pg_version)),
@@ -31,6 +41,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             cpu_span,
             Span::raw(" "),
             dot,
+            backup_span,
         ]);
         ListItem::new(line)
     }).collect();

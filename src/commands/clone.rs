@@ -249,7 +249,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     // bad perms), destroying the working clone would be a worse outcome
     // than the missing state.toml — the user has the actual instance and
     // can re-save it. Log loudly so they know.
-    if let Err(e) = state.save_under(&state_root) {
+    if let Err(e) = state.save_under_locked(&state_root) {
         tracing::error!(
             target: "pgforge::clone",
             "clone bootstrapped successfully but state.toml save failed: {e}. \

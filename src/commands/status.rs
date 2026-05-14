@@ -48,6 +48,13 @@ pub struct InstanceStatus {
     /// container is running but this is `Some(false)`, postgres is
     /// not yet reachable (still booting, or hung).
     pub db_responsive: Option<bool>,
+    /// Whether this instance has pgbackrest backups configured.
+    pub backup_enabled: bool,
+    /// True when the last snapshot attempt is newer than the last success —
+    /// backups are broken and need operator attention.
+    pub backup_failing: bool,
+    /// RFC3339 timestamp of the last *successful* snapshot, if any.
+    pub last_snapshot_at: Option<String>,
 }
 
 pub async fn run(args: StatusArgs) -> Result<InstanceStatus> {
@@ -70,6 +77,11 @@ pub async fn run_with_engine<E: DockerEngine>(
         name: state.instance.name.clone(),
         running: false,
         host_port: state.instance.host_port,
+        // Backup health is independent of container run state, so populate it
+        // before the early `!running` return below.
+        backup_enabled: state.instance.backup_enabled,
+        backup_failing: state.instance.backup_failing(),
+        last_snapshot_at: state.instance.last_snapshot_at.clone(),
         ..Default::default()
     };
     let inspect = docker.inspect_container(&container).await?;
@@ -215,6 +227,21 @@ pub fn render(status: &InstanceStatus) -> String {
         "State: {}\n",
         if status.running { "running" } else { "stopped" }
     ));
+    // Backup health — independent of container run state, shown for both
+    // running and stopped instances so a silent backup outage is visible.
+    if status.backup_enabled {
+        if status.backup_failing {
+            s.push_str("Backups: ✗ FAILING — last attempt is newer than last success\n");
+        } else {
+            s.push_str("Backups: ✓ ok\n");
+        }
+        match &status.last_snapshot_at {
+            Some(ts) => s.push_str(&format!("Last snapshot: {ts}\n")),
+            None => s.push_str("Last snapshot: never\n"),
+        }
+    } else {
+        s.push_str("Backups: disabled (--no-backup)\n");
+    }
     if !status.running {
         return s;
     }

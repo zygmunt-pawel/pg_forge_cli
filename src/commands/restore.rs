@@ -10,7 +10,7 @@ use crate::domain::platform::current_platform;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::ports::{TcpProbe, allocate_port};
-use crate::postgres::conf::generate_postgresql_conf;
+use crate::postgres::conf::generate_postgresql_conf_with_archive;
 use crate::postgres::hba::generate_pg_hba;
 use crate::state::instance::InstanceState;
 use std::collections::{HashMap, HashSet};
@@ -97,9 +97,13 @@ pub async fn run_with_engine<E: DockerEngine>(
     let pgbackrest_conf = root.join("pgbackrest.conf");
     let entrypoint = root.join("restore-entrypoint.sh");
 
+    // archive_mode = off on a restored instance: after `--target-action=promote`
+    // it runs on a new timeline, and its pgbackrest.conf still points at the
+    // SOURCE's repo. Archiving would push that new-timeline WAL into the
+    // source's stanza and corrupt the source's backup chain.
     std::fs::write(
         &postgresql_conf,
-        generate_postgresql_conf(source.instance.preset, plat),
+        generate_postgresql_conf_with_archive(source.instance.preset, plat, false),
     )
     .map_err(|e| PgForgeError::Io {
         path: postgresql_conf.clone(),
@@ -241,7 +245,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     // state.save_under is OUTSIDE the cleanup wrap — restore can take many
     // minutes against S3, and a fully-bootstrapped restored container
     // shouldn't be destroyed because of a local filesystem error.
-    if let Err(e) = state.save_under(&state_root) {
+    if let Err(e) = state.save_under_locked(&state_root) {
         tracing::error!(
             target: "pgforge::restore",
             "restore {} bootstrapped successfully but state.toml save failed: {e}. \
@@ -272,27 +276,41 @@ async fn bootstrap_restore<E: DockerEngine>(
     crate::docker::wait::wait_for_pg_ready(docker, id, 600).await?;
     crate::docker::wait::wait_for_recovery_end(docker, id, 600).await?;
 
-    Ok(InstanceState {
+    Ok(restored_instance_state(&source, &args.as_name, host_port))
+}
+
+/// Build the `InstanceState` for a freshly restored instance.
+///
+/// A restored instance is a recovery artifact: it is populated by
+/// `pgbackrest restore` reading the SOURCE's repo, then promoted onto a new
+/// timeline. It therefore must NOT inherit `backup_enabled`/`snapshot_hour`
+/// from the source — if it did, the scheduler would archive WAL from the new
+/// timeline straight back into the source's stanza and corrupt the source's
+/// backup chain. It stays inert (no archiving, no schedule) until the
+/// operator explicitly re-enables backups for it.
+pub fn restored_instance_state(
+    source: &InstanceState,
+    as_name: &str,
+    host_port: u16,
+) -> InstanceState {
+    InstanceState {
         instance: Instance {
-            name: args.as_name.clone(),
+            name: as_name.to_string(),
             db_name: source.instance.db_name.clone(),
-            app_user: source.instance.app_user,
-            app_password: source.instance.app_password,
-            pgbackrest_password: source.instance.pgbackrest_password,
+            app_user: source.instance.app_user.clone(),
+            app_password: source.instance.app_password.clone(),
+            pgbackrest_password: source.instance.pgbackrest_password.clone(),
             preset: source.instance.preset,
             pg_version: source.instance.pg_version,
             host_port,
-            // Restored instance reuses source's pgbackrest config (see
-            // README caveat — its archive-push to source's stanza will be
-            // rejected post-promote, that's a Plan 4 known limitation).
-            backup_enabled: source.instance.backup_enabled,
+            backup_enabled: false,
             volume_name_override: None,
             retain_days: source.instance.retain_days,
-            snapshot_hour: source.instance.snapshot_hour,
-            last_snapshot_at: source.instance.last_snapshot_at.clone(),
-            last_snapshot_attempt_at: source.instance.last_snapshot_attempt_at.clone(),
+            snapshot_hour: None,
+            last_snapshot_at: None,
+            last_snapshot_attempt_at: None,
             full_backup_day: source.instance.full_backup_day,
         },
         created_at: crate::time::now_iso(),
-    })
+    }
 }

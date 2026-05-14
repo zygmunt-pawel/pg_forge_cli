@@ -20,6 +20,9 @@ pub struct InstanceSummary {
     pub preset_label: String,
     pub host_port: u16,
     pub backup_enabled: bool,
+    /// True when the last snapshot attempt is newer than the last success —
+    /// backups are currently broken and need operator attention.
+    pub backup_failing: bool,
     pub running: bool,
 }
 
@@ -57,6 +60,7 @@ pub async fn run_with_engine<E: DockerEngine>(
             preset_label: format!("{:?}", state.instance.preset).to_lowercase(),
             host_port: state.instance.host_port,
             backup_enabled: state.instance.backup_enabled,
+            backup_failing: state.instance.backup_failing(),
             running,
         });
     }
@@ -76,13 +80,20 @@ pub fn render_table(rows: &[InstanceSummary]) -> String {
         "NAME", "PG", "PRESET", "PORT", "BACKUPS", "RUNNING"
     ));
     for r in rows {
+        let backups = if !r.backup_enabled {
+            "no"
+        } else if r.backup_failing {
+            "FAILING"
+        } else {
+            "yes"
+        };
         s.push_str(&format!(
             "{:<24} {:<7} {:<8} {:<6} {:<8} {:<7}\n",
             truncate(&r.name, 24),
             r.pg_version,
             truncate(&r.preset_label, 8),
             r.host_port,
-            if r.backup_enabled { "yes" } else { "no" },
+            backups,
             if r.running { "yes" } else { "no" }
         ));
     }

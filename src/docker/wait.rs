@@ -74,10 +74,23 @@ pub async fn wait_for_recovery_end<E: DockerEngine>(
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
+        // Connect as `pgbackrest`, not `postgres`: pgforge's generated
+        // pg_hba.conf trusts `pgbackrest` on the local socket but has no
+        // entry for the `postgres` role, so `-U postgres` gets "no
+        // pg_hba.conf entry" and the wait burns its whole deadline against
+        // a healthy, already-promoted postgres. `pgbackrest` always exists
+        // on a backup-enabled instance (the only kind restore/clone — the
+        // only callers — operate on). `-d postgres` because no `pgbackrest`
+        // database exists.
+        // `select pg_is_in_recovery()` (no `::text` cast): `psql -tA` renders
+        // a raw boolean as `f`/`t`, which is what the `== "f"` check below
+        // expects. Casting to ::text would render `false`/`true` and the
+        // check would never match.
         let out = docker
             .exec(id, &[
-                "psql", "-tA", "-U", "postgres", "-h", "/var/run/postgresql",
-                "-c", "select pg_is_in_recovery()::text",
+                "psql", "-tA", "-U", "pgbackrest", "-d", "postgres",
+                "-h", "/var/run/postgresql",
+                "-c", "select pg_is_in_recovery()",
             ])
             .await;
         if let Ok(o) = out {

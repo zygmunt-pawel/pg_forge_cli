@@ -3,9 +3,10 @@ use std::fs::File;
 use std::path::Path;
 
 /// Write `content` to `path` atomically: write to `path.<pid>.tmp` in the same
-/// directory, fsync the file, then rename over the destination. Creates the
-/// parent directory if missing. Survives crash mid-write — readers either see
-/// the previous content or the new content, never a truncated mix.
+/// directory, fsync the file, rename over the destination, then fsync the
+/// parent directory. Creates the parent directory if missing. Survives crash
+/// mid-write — readers either see the previous content or the new content,
+/// never a truncated mix — and the rename itself is durable across power loss.
 pub fn atomic_write(path: &Path, content: impl AsRef<[u8]>) -> Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
@@ -30,6 +31,27 @@ pub fn atomic_write(path: &Path, content: impl AsRef<[u8]>) -> Result<()> {
     drop(f);
     std::fs::rename(&tmp, path).map_err(|e| PgForgeError::Io {
         path: path.to_path_buf(),
+        source: e,
+    })?;
+    // fsync the parent dir so the rename survives a crash. Without this,
+    // `state.toml` / `snapshots.toml` can revert or vanish on power loss.
+    if let Some(parent) = path.parent() {
+        fsync_dir(parent)?;
+    }
+    Ok(())
+}
+
+/// fsync a directory so that a rename/create within it is durable. On a crash
+/// (e.g. the Mac mini losing power) a file can be `sync_all`'d while the
+/// directory entry pointing at it is still only in the page cache — the file
+/// then reverts or vanishes on reboot. Syncing the directory closes that gap.
+pub fn fsync_dir(dir: &Path) -> Result<()> {
+    let f = File::open(dir).map_err(|e| PgForgeError::Io {
+        path: dir.to_path_buf(),
+        source: e,
+    })?;
+    f.sync_all().map_err(|e| PgForgeError::Io {
+        path: dir.to_path_buf(),
         source: e,
     })
 }

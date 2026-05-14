@@ -115,9 +115,12 @@ pub async fn run_with_engine<E: DockerEngine>(
     // 3. Remove data volume.
     docker.remove_volume(&volume_name).await?;
 
-    // 4. Remove state dir (state.toml + conf/ + secrets).
+    // 4. Remove state dir (state.toml + conf/ + secrets). Under the
+    // state-root lock so a concurrent launchd snapshot tick can't load a
+    // half-deleted instance mid-removal.
     let inst_dir = state_root.join("instances").join(&args.name);
     if inst_dir.exists() {
+        let _lock = crate::util::fs::LockedStateRoot::acquire(&state_root)?;
         std::fs::remove_dir_all(&inst_dir).map_err(|e| PgForgeError::Io {
             path: inst_dir,
             source: e,

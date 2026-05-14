@@ -1,5 +1,21 @@
-use pgforge::util::fs::{atomic_write, create_secret_dir, write_secret};
+use pgforge::util::fs::{atomic_write, create_secret_dir, fsync_dir, write_secret};
 use pgforge::util::fs::LockedStateRoot;
+
+#[test]
+fn fsync_dir_succeeds_on_existing_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    fsync_dir(dir.path()).unwrap();
+}
+
+#[test]
+fn fsync_dir_errors_on_missing_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist");
+    assert!(
+        fsync_dir(&missing).is_err(),
+        "fsync_dir must surface an error for a non-existent directory"
+    );
+}
 
 #[test]
 fn write_secret_sets_mode_0600_on_unix() {

@@ -49,7 +49,7 @@ pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
             user_label: Some("auto-scheduled".into()),
             override_state_root: Some(state_root.clone()),
         }).await {
-            tracing::warn!(target: "pgforge::snapshot::due",
+            tracing::error!(target: "pgforge::snapshot::due",
                 "due snapshot for {name} failed: {e}");
             if let Ok(_lock) = crate::util::fs::LockedStateRoot::acquire(&state_root) {
                 if let Ok(mut s) = crate::state::instance::InstanceState::load_under(&state_root, &name) {

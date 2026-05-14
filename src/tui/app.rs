@@ -720,33 +720,29 @@ impl AppState {
                     return;
                 }
                 // Persist the change to state.toml. This is sync I/O but
-                // small (single TOML write), acceptable in apply_event.
+                // small (single TOML write under the state-root lock),
+                // acceptable in apply_event. update_under re-loads inside the
+                // lock so a concurrent launchd snapshot tick can't be
+                // clobbered (and vice versa).
                 let root = crate::state::instance::InstanceState::default_state_root();
-                match crate::state::instance::InstanceState::load_under(&root, &name) {
-                    Ok(mut state) => {
-                        state.instance.snapshot_hour = new;
-                        if let Err(e) = state.save_under(&root) {
-                            self.last_op_error = Some(OpError {
-                                instance: name.clone(),
-                                kind: OpKind::Snapshot,
-                                msg: format!("save state.toml: {e}"),
-                                at: Instant::now(),
-                            });
-                        } else {
-                            let msg = match new {
-                                Some(h) => format!("auto-snapshot for {name}: {:02}:00 local", h),
-                                None    => format!("auto-snapshot for {name}: disabled (manual only)"),
-                            };
-                            self.flash = Some(Flash {
-                                msg, kind: FlashKind::Success, at: Instant::now(),
-                            });
-                        }
+                match crate::state::instance::InstanceState::update_under(&root, &name, |s| {
+                    s.instance.snapshot_hour = new;
+                    Ok(())
+                }) {
+                    Ok(_) => {
+                        let msg = match new {
+                            Some(h) => format!("auto-snapshot for {name}: {:02}:00 local", h),
+                            None    => format!("auto-snapshot for {name}: disabled (manual only)"),
+                        };
+                        self.flash = Some(Flash {
+                            msg, kind: FlashKind::Success, at: Instant::now(),
+                        });
                     }
                     Err(e) => {
                         self.last_op_error = Some(OpError {
                             instance: name.clone(),
                             kind: OpKind::Snapshot,
-                            msg: format!("load state.toml: {e}"),
+                            msg: format!("update state.toml: {e}"),
                             at: Instant::now(),
                         });
                     }
@@ -893,6 +889,7 @@ mod tests {
             preset_label: "tiny".to_string(),
             host_port: 5432,
             backup_enabled: true,
+            backup_failing: false,
             running: true,
         }
     }

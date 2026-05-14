@@ -71,7 +71,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     global: GlobalConfig,
 ) -> Result<()> {
     Instance::validate_name(&args.name)?;
-    let mut state = InstanceState::load_under(&state_root, &args.name)?;
+    let state = InstanceState::load_under(&state_root, &args.name)?;
     let from_ver = state.instance.pg_version;
     let to_ver = args.to_version;
 
@@ -205,10 +205,14 @@ pub async fn run_with_engine<E: DockerEngine>(
     // 8b. Success: remove the one-shot container; volume swap is logical.
     let _ = docker.remove_container(&upgrade_container, true).await;
 
-    // 9. Persist state changes: new pg_version + new volume name.
-    state.instance.pg_version = to_ver;
-    state.instance.volume_name_override = Some(new_volume.clone());
-    state.save_under(&state_root)?;
+    // 9. Persist state changes: new pg_version + new volume name. update_under
+    // re-loads inside the lock so the pre-upgrade snapshot's last_snapshot_at
+    // (and any concurrent edit) survives instead of being clobbered.
+    let state = InstanceState::update_under(&state_root, &args.name, |s| {
+        s.instance.pg_version = to_ver;
+        s.instance.volume_name_override = Some(new_volume.clone());
+        Ok(())
+    })?;
 
     // 10. Recreate the regular pgforge container on the upgraded volume.
     // Mirrors the rotate flow but uses the new (post-upgrade) state.

@@ -87,6 +87,21 @@ impl Instance {
             .unwrap_or_else(|| format!("pgforge_data_{}", self.name))
     }
 
+    /// True when the most recent snapshot *attempt* is newer than the most
+    /// recent *success* (or there has been an attempt but no success) — i.e.
+    /// backups are currently broken. Timestamps are fixed-width ISO-8601
+    /// (`YYYY-MM-DDTHH:MM:SSZ`), so lexicographic comparison is chronological.
+    pub fn backup_failing(&self) -> bool {
+        if !self.backup_enabled {
+            return false;
+        }
+        match (&self.last_snapshot_at, &self.last_snapshot_attempt_at) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(ok), Some(attempt)) => attempt.as_str() > ok.as_str(),
+        }
+    }
+
     /// Snapshot hour must be in 0..=23 (a valid hour of the day).
     /// A value like 24 or 99 causes `is_snapshot_due` to never fire,
     /// silently killing the scheduler for that instance.
