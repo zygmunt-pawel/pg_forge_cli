@@ -36,11 +36,16 @@ async fn main() -> Result<()> {
             // tracing macros become no-ops. Better than corrupting the TUI.
         }
     } else {
+        // CLI mode: diagnostic logs go to STDERR, never stdout —
+        // `tracing_subscriber::fmt()` defaults to stdout, which would
+        // pollute commands whose stdout is a contract (e.g. `pgforge dump`
+        // prints exactly the dump path on stdout for `make`/`scp` glue).
         tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
             )
             .with_target(false)
+            .with_writer(std::io::stderr)
             .init();
     }
     dispatch(cli).await
