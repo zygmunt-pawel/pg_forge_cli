@@ -148,14 +148,32 @@ pub async fn run_with_engine<E: DockerEngine>(
     // Resolve the dump dir + final path.
     // When `--out` is a bare filename (e.g. `billing.dump`), `parent()` returns
     // `Some("")` — an empty path, NOT `None` — so we must also guard for that.
-    let dump_dir = match &args.out {
-        Some(out) => match out.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-            _ => PathBuf::from("."),
-        },
-        None => default_dump_dir()?,
+    // `pgforge_owns_dir` distinguishes the default `~/pgforge-dumps/` (ours to
+    // create 0700) from a user-supplied `--out` parent (could be `/tmp`,
+    // `~/Downloads`, … — we must NOT chmod a directory we don't own).
+    let (dump_dir, pgforge_owns_dir) = match &args.out {
+        Some(out) => {
+            let parent = match out.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            (parent, false)
+        }
+        None => (default_dump_dir()?, true),
     };
-    crate::util::fs::create_secret_dir(&dump_dir)?;
+    if pgforge_owns_dir {
+        // Default dump dir — pgforge owns it; 0700, it holds production data.
+        crate::util::fs::create_secret_dir(&dump_dir)?;
+    } else {
+        // User-chosen `--out` location: ensure it exists, but never chmod a
+        // directory pgforge doesn't own. The dump FILE itself is still 0600
+        // (exec_to_file enforces that), which is what actually protects the
+        // production data.
+        std::fs::create_dir_all(&dump_dir).map_err(|e| PgForgeError::Io {
+            path: dump_dir.clone(),
+            source: e,
+        })?;
+    }
     let final_path = resolve_dump_path(
         args.out.clone(),
         &state.instance.name,
