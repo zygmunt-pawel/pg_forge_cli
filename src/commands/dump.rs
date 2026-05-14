@@ -48,3 +48,16 @@ pub fn parse_df_available_kb(df_output: &str) -> Option<u64> {
 /// Minimum free space (KiB) required before starting a dump. 5 GiB — the
 /// dump dir shares the disk with live PG data volumes.
 pub const MIN_FREE_KB: u64 = 5 * 1024 * 1024;
+
+/// Given an instance's dump filenames and a keep-count `n`, return the
+/// filenames to delete — everything except the newest `n`. Default dump
+/// filenames embed a fixed-width timestamp, so lexicographic sort is
+/// chronological. `n == 0` is treated as "keep all" (no pruning).
+pub fn dumps_to_prune(files: &mut [String], n: usize) -> Vec<String> {
+    if n == 0 || files.len() <= n {
+        return Vec::new();
+    }
+    files.sort();
+    let cutoff = files.len() - n;
+    files[..cutoff].to_vec()
+}

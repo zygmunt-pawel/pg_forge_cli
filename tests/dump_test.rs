@@ -1,3 +1,4 @@
+use pgforge::commands::dump::dumps_to_prune;
 use pgforge::commands::dump::is_valid_custom_dump;
 use pgforge::commands::dump::parse_df_available_kb;
 use pgforge::commands::dump::resolve_dump_path;
@@ -52,4 +53,24 @@ fn parse_df_reads_available_column_from_posix_output() {
 fn parse_df_returns_none_on_garbage() {
     assert_eq!(parse_df_available_kb(""), None);
     assert_eq!(parse_df_available_kb("just a header\n"), None);
+}
+
+#[test]
+fn dumps_to_prune_keeps_newest_n_by_filename() {
+    // Default filenames sort chronologically (timestamp is fixed-width).
+    let mut files = vec![
+        "billing-20260514-093000.dump".to_string(),
+        "billing-20260512-093000.dump".to_string(),
+        "billing-20260513-093000.dump".to_string(),
+    ];
+    let prune = dumps_to_prune(&mut files, 2);
+    assert_eq!(prune, vec!["billing-20260512-093000.dump".to_string()]);
+}
+
+#[test]
+fn dumps_to_prune_keeps_all_when_count_within_limit() {
+    let mut files = vec!["billing-20260514-093000.dump".to_string()];
+    assert!(dumps_to_prune(&mut files, 2).is_empty());
+    let mut none: Vec<String> = vec![];
+    assert!(dumps_to_prune(&mut none, 0).is_empty());
 }
