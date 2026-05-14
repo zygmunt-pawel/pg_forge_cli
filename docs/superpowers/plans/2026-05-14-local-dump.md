@@ -925,10 +925,11 @@ pub async fn run_with_engine<E: DockerEngine>(
     );
 
     // Stream pg_dump into the .partial file, bounded by the timeout.
+    // No `--lock-timeout`: that is a server GUC, not a pg_dump CLI flag — the
+    // overall `tokio::time::timeout` below bounds a dump stuck on a lock.
     let cmd = [
         "pg_dump",
         "-Fc",
-        "--lock-timeout=5000",
         "-U",
         state.instance.app_user.as_str(),
         "-h",

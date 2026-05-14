@@ -92,11 +92,13 @@ timeout_secs: u64, override_state_root: Option<PathBuf> }`.
      before streaming (a `pg_dump` runs for minutes silently otherwise), including
      a "reads live production data" warning.
    - Run, inside the container, via `exec_to_file` (see below):
-     `pg_dump -Fc --lock-timeout=5000 -U <app_user> -h /var/run/postgresql <db_name>`
-     — `-Fc` custom format (compressed, `pg_restore`-able anywhere); `--lock-timeout`
-     so the dump fails fast instead of blocking indefinitely behind DDL; connects
-     over the container's local socket as `<app_user>`, which `generate_pg_hba`
-     already trusts (`local all <app_user> trust`) — **no password on argv/env**,
+     `pg_dump -Fc -U <app_user> -h /var/run/postgresql <db_name>`
+     — `-Fc` custom format (compressed, `pg_restore`-able anywhere). (No
+     `--lock-timeout`: that is a server GUC, not a pg_dump CLI flag — the
+     overall `tokio::time::timeout` bounds a dump stuck behind a lock.)
+     Connects over the container's local socket as `<app_user>`, which
+     `generate_pg_hba` already trusts (`local all <app_user> trust`) — **no
+     password on argv/env**,
      so nothing leaks via `docker inspect` or `/proc`.
    - Wrap the whole stream-consumption in `tokio::time::timeout(args.timeout_secs)`.
      On timeout → guard removes `.partial`, error: `pg_dump exceeded <N>s; the
