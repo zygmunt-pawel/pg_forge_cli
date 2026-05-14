@@ -61,6 +61,77 @@ impl BollardEngine {
     }
 }
 
+/// Where an exec's stdout bytes are routed.
+enum StdoutSink<'a> {
+    /// UTF-8-lossy into a String — for text commands.
+    Buffer(&'a mut String),
+    /// Raw bytes into a file — for binary output (pg_dump -Fc).
+    File(&'a mut tokio::fs::File),
+}
+
+impl BollardEngine {
+    /// Shared exec driver: create_exec + start_exec, drain the output stream
+    /// (stdout → `sink`, stderr → the returned String), then inspect_exec for
+    /// the exit code. `exit_code` is `None` when Docker reports no code
+    /// (container died) — callers decide how to treat that.
+    async fn drain_exec(
+        &self,
+        container: &str,
+        opts: bollard::exec::CreateExecOptions<String>,
+        mut sink: StdoutSink<'_>,
+    ) -> Result<(Option<i64>, String)> {
+        use bollard::exec::{StartExecOptions, StartExecResults};
+        use bollard::container::LogOutput;
+        use tokio::io::AsyncWriteExt;
+
+        let create = self
+            .docker
+            .create_exec(container, opts)
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("create_exec: {e}")))?;
+        let mut stderr = String::new();
+        match self
+            .docker
+            .start_exec(&create.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("start_exec: {e}")))?
+        {
+            StartExecResults::Attached { mut output, .. } => {
+                while let Some(chunk) = output.next().await {
+                    match chunk {
+                        Ok(LogOutput::StdOut { message }) | Ok(LogOutput::Console { message }) => {
+                            match &mut sink {
+                                StdoutSink::Buffer(s) => {
+                                    s.push_str(&String::from_utf8_lossy(&message));
+                                }
+                                StdoutSink::File(f) => {
+                                    f.write_all(&message).await.map_err(|e| {
+                                        PgForgeError::Docker(format!("exec_to_file write: {e}"))
+                                    })?;
+                                }
+                            }
+                        }
+                        Ok(LogOutput::StdErr { message }) => {
+                            stderr.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Err(PgForgeError::Docker(format!("exec stream: {e}")));
+                        }
+                    }
+                }
+            }
+            StartExecResults::Detached => {}
+        }
+        let inspect = self
+            .docker
+            .inspect_exec(&create.id)
+            .await
+            .map_err(|e| PgForgeError::Docker(format!("inspect_exec: {e}")))?;
+        Ok((inspect.exit_code, stderr))
+    }
+}
+
 #[async_trait]
 impl DockerEngine for BollardEngine {
     async fn build_image(&self, spec: &BuildImageSpec) -> Result<()> {
@@ -287,60 +358,18 @@ impl DockerEngine for BollardEngine {
     }
 
     async fn exec(&self, id: &str, cmd: &[&str]) -> Result<crate::docker::engine::ExecOutput> {
-        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-        use bollard::container::LogOutput;
+        use bollard::exec::CreateExecOptions;
         use crate::docker::engine::ExecOutput;
-
-        let create = self
-            .docker
-            .create_exec(
-                id,
-                CreateExecOptions {
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| PgForgeError::Docker(format!("create_exec: {e}")))?;
-
+        let opts = CreateExecOptions {
+            cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
+        };
         let mut stdout = String::new();
-        let mut stderr = String::new();
-
-        match self
-            .docker
-            .start_exec(&create.id, Some(StartExecOptions { detach: false, ..Default::default() }))
-            .await
-            .map_err(|e| PgForgeError::Docker(format!("start_exec: {e}")))?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                while let Some(chunk) = output.next().await {
-                    match chunk {
-                        Ok(LogOutput::StdOut { message }) => {
-                            stdout.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(LogOutput::StdErr { message }) => {
-                            stderr.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(LogOutput::Console { message }) => {
-                            stdout.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(_) => {}
-                        Err(e) => return Err(PgForgeError::Docker(format!("exec stream: {e}"))),
-                    }
-                }
-            }
-            StartExecResults::Detached => {}
-        }
-
-        let inspect = self
-            .docker
-            .inspect_exec(&create.id)
-            .await
-            .map_err(|e| PgForgeError::Docker(format!("inspect_exec: {e}")))?;
-        let exit_code = inspect.exit_code.unwrap_or(-1);
-        Ok(ExecOutput { stdout, stderr, exit_code })
+        let (exit_code, stderr) =
+            self.drain_exec(id, opts, StdoutSink::Buffer(&mut stdout)).await?;
+        Ok(ExecOutput { stdout, stderr, exit_code: exit_code.unwrap_or(-1) })
     }
 
     async fn exec_as(
@@ -349,61 +378,19 @@ impl DockerEngine for BollardEngine {
         user: &str,
         cmd: &[&str],
     ) -> Result<crate::docker::engine::ExecOutput> {
-        use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-        use bollard::container::LogOutput;
+        use bollard::exec::CreateExecOptions;
         use crate::docker::engine::ExecOutput;
-
-        let create = self
-            .docker
-            .create_exec(
-                container,
-                CreateExecOptions {
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    user: Some(user.to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| PgForgeError::Docker(format!("create_exec: {e}")))?;
-
+        let opts = CreateExecOptions {
+            cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            user: Some(user.to_string()),
+            ..Default::default()
+        };
         let mut stdout = String::new();
-        let mut stderr = String::new();
-
-        match self
-            .docker
-            .start_exec(&create.id, Some(StartExecOptions { detach: false, ..Default::default() }))
-            .await
-            .map_err(|e| PgForgeError::Docker(format!("start_exec: {e}")))?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                while let Some(chunk) = output.next().await {
-                    match chunk {
-                        Ok(LogOutput::StdOut { message }) => {
-                            stdout.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(LogOutput::StdErr { message }) => {
-                            stderr.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(LogOutput::Console { message }) => {
-                            stdout.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        Ok(_) => {}
-                        Err(e) => return Err(PgForgeError::Docker(format!("exec stream: {e}"))),
-                    }
-                }
-            }
-            StartExecResults::Detached => {}
-        }
-
-        let inspect = self
-            .docker
-            .inspect_exec(&create.id)
-            .await
-            .map_err(|e| PgForgeError::Docker(format!("inspect_exec: {e}")))?;
-        let exit_code = inspect.exit_code.unwrap_or(-1);
-        Ok(ExecOutput { stdout, stderr, exit_code })
+        let (exit_code, stderr) =
+            self.drain_exec(container, opts, StdoutSink::Buffer(&mut stdout)).await?;
+        Ok(ExecOutput { stdout, stderr, exit_code: exit_code.unwrap_or(-1) })
     }
 
     async fn exec_with_stdin(
@@ -480,6 +467,55 @@ impl DockerEngine for BollardEngine {
             .map_err(|e| PgForgeError::Docker(format!("inspect_exec (stdin): {e}")))?;
         let exit_code = inspect.exit_code.unwrap_or(-1);
         Ok(ExecOutput { stdout, stderr, exit_code })
+    }
+
+    async fn exec_to_file(
+        &self,
+        container: &str,
+        cmd: &[&str],
+        dest: &std::path::Path,
+    ) -> Result<crate::docker::engine::ExecToFileOutput> {
+        use bollard::exec::CreateExecOptions;
+        use crate::docker::engine::ExecToFileOutput;
+        use tokio::io::AsyncWriteExt;
+
+        // O_EXCL: an existing file at `dest` is a hard error (callers pass a
+        // per-pid-unique path). 0600 on unix — the stream may be production data.
+        let mut open = tokio::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        let mut file = open.open(dest).await.map_err(|e| PgForgeError::Io {
+            path: dest.to_path_buf(),
+            source: e,
+        })?;
+
+        let opts = CreateExecOptions {
+            cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
+        };
+        let (exit_code, stderr) = self
+            .drain_exec(container, opts, StdoutSink::File(&mut file))
+            .await?;
+        file.flush().await.map_err(|e| PgForgeError::Io {
+            path: dest.to_path_buf(),
+            source: e,
+        })?;
+        file.sync_all().await.map_err(|e| PgForgeError::Io {
+            path: dest.to_path_buf(),
+            source: e,
+        })?;
+        let exit_code = exit_code.ok_or_else(|| {
+            PgForgeError::Docker(format!(
+                "exec_to_file({container}): no exit code — the container likely died mid-exec"
+            ))
+        })?;
+        Ok(ExecToFileOutput { exit_code, stderr })
     }
 
     async fn stop_container(&self, id: &str) -> Result<()> {

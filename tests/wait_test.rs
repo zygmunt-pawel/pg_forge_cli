@@ -38,6 +38,14 @@ impl DockerEngine for RecordingEngine {
     async fn exec_with_stdin(&self, _: &str, _: &[&str], _: &str) -> Result<ExecOutput> {
         unimplemented!()
     }
+    async fn exec_to_file(
+        &self,
+        _: &str,
+        _: &[&str],
+        _: &std::path::Path,
+    ) -> Result<pgforge::docker::engine::ExecToFileOutput> {
+        unimplemented!()
+    }
     async fn stop_container(&self, _: &str) -> Result<()> { unimplemented!() }
     async fn wait_for_container_running(&self, _: &str, _: Duration) -> Result<()> {
         unimplemented!()

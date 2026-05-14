@@ -424,6 +424,18 @@ mod tests {
             // Mock: delegate to exec, ignoring stdin_data.
             self.exec(container, cmd).await
         }
+        async fn exec_to_file(
+            &self,
+            _: &str,
+            _: &[&str],
+            _: &std::path::Path,
+        ) -> crate::error::Result<crate::docker::engine::ExecToFileOutput> {
+            self.calls.lock().unwrap().push("exec_to_file");
+            Ok(crate::docker::engine::ExecToFileOutput {
+                exit_code: 0,
+                stderr: String::new(),
+            })
+        }
         async fn stop_container(&self, _: &str) -> crate::error::Result<()> {
             self.calls.lock().unwrap().push("stop_container");
             Ok(())

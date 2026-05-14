@@ -66,6 +66,12 @@ pub struct ExecOutput {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExecToFileOutput {
+    pub exit_code: i64,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct BuildImageSpec {
     /// Tag the resulting image will be saved under, e.g. "pgforge/postgres:18".
     pub tag: String,
@@ -104,6 +110,19 @@ pub trait DockerEngine: Send + Sync {
         cmd: &[&str],
         stdin_data: &str,
     ) -> Result<ExecOutput>;
+
+    /// Run `cmd` inside `container`, streaming the process's stdout directly
+    /// into a freshly-created file at `dest` (created with O_EXCL so an
+    /// existing file is a hard error; mode 0600 on unix — the content may be
+    /// production data). stderr is captured to a String. Returns the exit
+    /// code; an unknown/missing exit code (container died mid-exec) is an
+    /// `Err`, never silently 0.
+    async fn exec_to_file(
+        &self,
+        container: &str,
+        cmd: &[&str],
+        dest: &std::path::Path,
+    ) -> Result<ExecToFileOutput>;
 
     /// Stop a running container (SIGTERM, grace period 10s, then SIGKILL).
     async fn stop_container(&self, id: &str) -> Result<()>;
