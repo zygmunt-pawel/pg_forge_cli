@@ -28,3 +28,11 @@ pub fn resolve_dump_path(
     };
     dump_dir.join(format!("{instance}-{stamp}.dump"))
 }
+
+/// True iff `head` (the first bytes of a file) is the start of a pg_dump
+/// custom-format archive. A clean `pg_dump` exit with a 0-byte or truncated
+/// file is still a failed dump; the `PGDMP` magic is the cheapest reliable
+/// "this is a real dump" gate before we rename `.partial` into place.
+pub fn is_valid_custom_dump(head: &[u8]) -> bool {
+    head.starts_with(b"PGDMP")
+}

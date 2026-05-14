@@ -1,3 +1,4 @@
+use pgforge::commands::dump::is_valid_custom_dump;
 use pgforge::commands::dump::resolve_dump_path;
 use std::path::PathBuf;
 
@@ -24,4 +25,16 @@ fn resolve_dump_path_out_override_is_used_verbatim() {
         "2026-05-14T09:30:00Z",
     );
     assert_eq!(p, PathBuf::from("/tmp/mine.dump"));
+}
+
+#[test]
+fn valid_custom_dump_recognises_pgdmp_header() {
+    assert!(is_valid_custom_dump(b"PGDMP\x01\x0e\x00"));
+}
+
+#[test]
+fn valid_custom_dump_rejects_empty_and_truncated() {
+    assert!(!is_valid_custom_dump(b""));
+    assert!(!is_valid_custom_dump(b"PGD"));
+    assert!(!is_valid_custom_dump(b"-- plain sql dump\n"));
 }
