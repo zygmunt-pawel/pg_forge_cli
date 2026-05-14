@@ -74,3 +74,121 @@ fn dumps_to_prune_keeps_all_when_count_within_limit() {
     let mut none: Vec<String> = vec![];
     assert!(dumps_to_prune(&mut none, 0).is_empty());
 }
+
+use async_trait::async_trait;
+use pgforge::commands::dump::{run_with_engine, DumpArgs};
+use pgforge::docker::engine::{
+    BuildImageSpec, ContainerInspect, CreateContainerSpec, DockerEngine, ExecOutput,
+    ExecToFileOutput,
+};
+use pgforge::domain::instance::Instance;
+use pgforge::domain::preset::Preset;
+use pgforge::error::Result as PgResult;
+use pgforge::state::instance::InstanceState;
+use std::time::Duration;
+use tempfile::TempDir;
+
+struct DumpMockEngine {
+    running: bool,
+}
+
+#[async_trait]
+impl DockerEngine for DumpMockEngine {
+    async fn container_running(&self, _: &str) -> PgResult<bool> {
+        Ok(self.running)
+    }
+    async fn build_image(&self, _: &BuildImageSpec) -> PgResult<()> { unimplemented!() }
+    async fn ensure_network(&self, _: &str) -> PgResult<()> { unimplemented!() }
+    async fn create_container(&self, _: &CreateContainerSpec) -> PgResult<String> { unimplemented!() }
+    async fn start_container(&self, _: &str) -> PgResult<()> { unimplemented!() }
+    async fn container_exists(&self, _: &str) -> PgResult<bool> { unimplemented!() }
+    async fn exec(&self, _: &str, _: &[&str]) -> PgResult<ExecOutput> { unimplemented!() }
+    async fn exec_as(&self, _: &str, _: &str, _: &[&str]) -> PgResult<ExecOutput> { unimplemented!() }
+    async fn exec_with_stdin(&self, _: &str, _: &[&str], _: &str) -> PgResult<ExecOutput> { unimplemented!() }
+    async fn exec_to_file(&self, _: &str, _: &[&str], _: &std::path::Path) -> PgResult<ExecToFileOutput> {
+        unimplemented!()
+    }
+    async fn stop_container(&self, _: &str) -> PgResult<()> { unimplemented!() }
+    async fn wait_for_container_running(&self, _: &str, _: Duration) -> PgResult<()> { unimplemented!() }
+    async fn wait_for_container_exit(&self, _: &str, _: Duration) -> PgResult<i64> { unimplemented!() }
+    async fn remove_container(&self, _: &str, _: bool) -> PgResult<()> { unimplemented!() }
+    async fn remove_volume(&self, _: &str) -> PgResult<()> { unimplemented!() }
+    async fn inspect_container(&self, _: &str) -> PgResult<ContainerInspect> { unimplemented!() }
+    async fn logs(&self, _: &str) -> PgResult<String> { unimplemented!() }
+}
+
+fn write_instance(state_root: &std::path::Path, name: &str) {
+    InstanceState {
+        instance: Instance {
+            name: name.into(),
+            db_name: name.into(),
+            app_user: "leads".into(),
+            app_password: "pw".into(),
+            pgbackrest_password: "rpw".into(),
+            preset: Preset::Tiny,
+            pg_version: 18,
+            host_port: 5433,
+            backup_enabled: true,
+            volume_name_override: None,
+            retain_days: 30,
+            snapshot_hour: Some(3),
+            last_snapshot_at: None,
+            last_snapshot_attempt_at: None,
+            full_backup_day: 0,
+        },
+        created_at: "2026-05-12T10:00:00Z".into(),
+    }
+    .save_under(state_root)
+    .unwrap();
+}
+
+fn args(name: &str, root: &std::path::Path, out: Option<std::path::PathBuf>) -> DumpArgs {
+    DumpArgs {
+        name: name.into(),
+        out,
+        force: false,
+        keep: None,
+        timeout_secs: 1800,
+        override_state_root: Some(root.to_path_buf()),
+    }
+}
+
+#[tokio::test]
+async fn run_with_engine_errors_when_instance_missing() {
+    let tmp = TempDir::new().unwrap();
+    let eng = DumpMockEngine { running: true };
+    let err = run_with_engine(args("ghost", tmp.path(), None), &eng, tmp.path().to_path_buf())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, pgforge::error::PgForgeError::InstanceNotFound(_)));
+}
+
+#[tokio::test]
+async fn run_with_engine_errors_when_container_not_running() {
+    let tmp = TempDir::new().unwrap();
+    write_instance(tmp.path(), "billing");
+    let eng = DumpMockEngine { running: false };
+    let err = run_with_engine(args("billing", tmp.path(), None), &eng, tmp.path().to_path_buf())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not running"));
+}
+
+#[tokio::test]
+async fn run_with_engine_errors_when_destination_exists_without_force() {
+    let tmp = TempDir::new().unwrap();
+    write_instance(tmp.path(), "billing");
+    let existing = tmp.path().join("already.dump");
+    std::fs::write(&existing, b"old").unwrap();
+    let eng = DumpMockEngine { running: true };
+    let err = run_with_engine(
+        args("billing", tmp.path(), Some(existing.clone())),
+        &eng,
+        tmp.path().to_path_buf(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("already exists"));
+    // The pre-existing file must be untouched.
+    assert_eq!(std::fs::read(&existing).unwrap(), b"old");
+}
