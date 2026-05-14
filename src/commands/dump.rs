@@ -197,6 +197,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let partial = final_path.with_extension(format!("{}.partial", std::process::id()));
     let mut guard = PartialGuard::new(partial.clone());
 
+    let started = std::time::Instant::now();
     tracing::info!(
         target: "pgforge::dump",
         "dumping {:?} -> {} (reads LIVE production data)",
@@ -273,14 +274,21 @@ pub async fn run_with_engine<E: DockerEngine>(
     let size = std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
     tracing::info!(
         target: "pgforge::dump",
-        "dump complete: {} ({} bytes)",
+        "dump complete: {} ({} bytes, {}s)",
         final_path.display(),
-        size
+        size,
+        started.elapsed().as_secs()
     );
     eprintln!(
         "dump: {} ({:.1} MiB) — contains production data, delete after transfer.",
         final_path.display(),
         size as f64 / (1024.0 * 1024.0)
+    );
+    let total = dump_dir_total_bytes(&dump_dir);
+    eprintln!(
+        "dump: {} now holds {:.1} MiB of dumps total.",
+        dump_dir.display(),
+        total as f64 / (1024.0 * 1024.0)
     );
     Ok(final_path)
 }
@@ -304,6 +312,20 @@ fn sweep_stale_partials(dir: &Path) {
             let _ = std::fs::remove_file(&path);
         }
     }
+}
+
+/// Best-effort sum of `*.dump` file sizes in `dir`, in bytes. Returns 0 on
+/// any read error — this is only a cheap "you have N MiB of dumps" nudge.
+fn dump_dir_total_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.path().extension().and_then(|x| x.to_str()) == Some("dump")
+        })
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// Apply `--keep N` retention for `instance` in `dir`.
