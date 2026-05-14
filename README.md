@@ -2,18 +2,38 @@
 
 RDS-Single-AZ-equivalent provisioner for hardened PostgreSQL on a single host.
 
-## Status
+`pgforge` turns one Mac mini (or any Unix host with Docker) into a small managed
+Postgres service: each database is an isolated, hardened container with WAL
+archiving to S3, point-in-time recovery, scheduled backups, in-place major
+upgrades, and a terminal dashboard — driven entirely from the CLI, no GUI
+session required.
 
-**Plans 1-5 — implemented.** Foundation + create, snapshot/restore PITR, clone
-via pg_basebackup, security hardening, upgrade/rotate/ls/status, and the
-ratatui TUI dashboard. 150 unit tests green.
+## What it does
+
+- **Provision** isolated, hardened Postgres instances — one Docker container +
+  named volume + generated `postgresql.conf` / `pg_hba.conf` per database.
+- **Back up** continuously — WAL is pushed asynchronously to S3 via pgbackrest
+  (`archive_timeout = 60s`, so worst-case loss on a host crash is ~60s) plus
+  on-demand and scheduled full/diff snapshots.
+- **Restore** — point-in-time recovery, or restore-to-latest, as a *new* instance
+  alongside the original.
+- **Clone** a running instance via `pg_basebackup` for staging / migration tests.
+- **Dump** a live instance to a portable `pg_dump` file you can copy to your
+  laptop and restore locally.
+- **Upgrade** major versions in place with `pg_upgrade` (auto pre-upgrade
+  snapshot for rollback).
+- **Operate** — list, live metrics, resize tuning preset, rotate the container
+  onto current config, regenerate `pg_hba`, schedule daily snapshots, destroy.
+- **Watch** — an interactive ratatui dashboard (`pgforge` with no subcommand).
+
+Single-host by design: no HA, no replication, no failover — the same model as
+RDS Single-AZ.
 
 ## Install
 
-Two things on the target Mac: a headless Docker engine and the `pgforge`
-binary. Both can be installed and operated entirely over SSH — no GUI
-session required. Verified end-to-end on a clean Mac mini (Apple Silicon,
-macOS 26).
+Two things on the host: a headless Docker engine and the `pgforge` binary. Both
+install and operate entirely over SSH — no GUI session required. Verified
+end-to-end on a clean Mac mini (Apple Silicon, macOS 26).
 
 ### 1. Docker engine — Colima (headless, recommended for Mac mini servers)
 
@@ -57,22 +77,26 @@ is faster and lighter than Docker Desktop — `brew install --cask orbstack`,
 then **launch it once via the GUI** to accept the Gatekeeper / helper /
 Rosetta prompts. Don't try this over SSH; it doesn't work.)
 
+On a Linux host, just install Docker normally — the socket is at
+`/var/run/docker.sock` and pgforge picks it up with no extra setup.
+
 #### Troubleshooting
 
 - **`brew services start colima` fails with `Domain does not support
-  specified action`** — `launchctl` `gui/<uid>` domain only exists when
+  specified action`** — `launchctl`'s `gui/<uid>` domain only exists when
   the user has an active GUI (Aqua) session, which SSH alone doesn't
   provide. Use the `.zprofile` pattern above instead of `brew services`.
-- **`docker: command not found`** — your shell still has the
-  pre-install PATH. Open a new terminal, or `source ~/.zprofile`.
-- **`colima start` says VM exited unexpectedly with Rosetta error** —
-  that's the OrbStack failure mode. With Colima `--vm-type vz` you
-  don't need Rosetta unless you specifically run x86_64 containers; PG
-  images are multi-arch.
+- **`docker: command not found`** — your shell still has the pre-install
+  PATH. Open a new terminal, or `source ~/.zprofile`.
+- **`colima start` says VM exited unexpectedly with a Rosetta error** —
+  that's the OrbStack failure mode. With Colima `--vm-type vz` you don't
+  need Rosetta unless you specifically run x86_64 containers; PG images
+  are multi-arch.
 
 ### 2. pgforge binary
 
 Universal macOS binary (works on Apple Silicon + Intel):
+
 ```bash
 mkdir -p ~/.local/bin
 curl -L https://github.com/zygmunt-pawel/pg_forge_cli/releases/latest/download/pgforge \
@@ -87,206 +111,173 @@ source ~/.zprofile
 pgforge --version
 ```
 
+## Configuration
+
+pgforge reads one global config file with the host port range and S3
+credentials. Create `~/Library/Application Support/dev.pgforge.pgforge/config.toml`
+(macOS) or `~/.local/share/pgforge/config.toml` (Linux):
+
+```toml
+port_range_start = 5433
+port_range_end   = 5500
+
+[s3]
+bucket     = "your-pgforge-bucket"
+region     = "eu-central-1"
+endpoint   = "s3.eu-central-1.amazonaws.com"   # or an R2 / MinIO endpoint
+access_key = "AKIA…"
+secret_key = "…"
+```
+
+The `[s3]` section is required for backup-enabled instances (the default).
+For local-only instances created with `--no-backup`, it can be omitted.
+
+## Quick start
+
+```bash
+# 1. Create an instance. You choose two passwords here — they don't exist
+#    anywhere yet; pgforge creates the postgres roles with whatever you supply.
+PGFORGE_APP_PASSWORD=$(openssl rand -base64 24) \
+PGFORGE_PGBACKREST_PASSWORD=$(openssl rand -base64 24) \
+pgforge create --name billing --preset tiny --version 18
+
+# 2. Connect (port is printed at the end of `create` and shown in `pgforge ls`)
+psql "postgresql://leads:<your-app-password>@127.0.0.1:<port>/billing"
+```
+
+- `PGFORGE_APP_PASSWORD` — the **application user** password (default user
+  name `leads`). This is your "database password" — what `psql`, your app,
+  and ORMs use to connect.
+- `PGFORGE_PGBACKREST_PASSWORD` — the internal `pgbackrest` replication role
+  password (used for backups and `pgforge clone`). Not used by application
+  code. Not needed with `--no-backup`.
+
+Both passwords are stored (plaintext, mode 0600) in
+`…/dev.pgforge.pgforge/instances/<name>/state.toml`.
+
+For local dev / testing without S3, pass `--no-backup` — a plain hardened
+Postgres with no WAL archiving; `snapshot` / `clone` / `restore` are refused
+on such instances:
+
+```bash
+PGFORGE_APP_PASSWORD=changeme pgforge create --name dev --preset tiny --version 18 --no-backup
+```
+
+## Commands
+
+Run `pgforge <command> --help` for the full flag list of any command.
+
+### Provisioning
+
+| Command | What it does |
+|---|---|
+| `pgforge create --name X --preset tiny --version 18` | Create a hardened instance. Presets: `tiny` / `small` / `medium` / `large`. Flags: `--app-user`, `--no-backup`, `--retain-days N`, `--snapshot-hour H` / `--no-snapshot-hour`. |
+| `pgforge destroy --name X [--delete-backups] [--yes]` | Permanently delete an instance: stop + remove container, drop the data volume, remove `state.toml`. `--delete-backups` also wipes the S3 stanza (PITR becomes unrecoverable). `--yes` skips the confirmation prompt. |
+
+### Inspect
+
+| Command | What it does |
+|---|---|
+| `pgforge ls` | List all managed instances — version, preset, port, backups, running, and a `FAILING` flag if scheduled backups are broken. |
+| `pgforge status --name X` | Live metrics for one instance: CPU, memory, connection counts, DB + PGDATA size, uptime, and backup health (`Backups: ✓ ok` / `✗ FAILING`, last snapshot time). |
+
+### Backup & recovery
+
+| Command | What it does |
+|---|---|
+| `pgforge snapshot --name X [--label "..."]` | On-demand full/diff backup to S3 via pgbackrest. |
+| `pgforge snapshot --due` | Snapshot every backup-enabled instance whose scheduled hour has passed today and that hasn't been snapshotted yet — the command the scheduler runs. |
+| `pgforge snapshots --name X` | List recorded snapshots + the effective PITR window. |
+| `pgforge restore --source X --as Y [--target-time RFC3339]` | Restore as a **new** instance alongside the source. Without `--target-time`, restores to the latest archived WAL. The restored instance is inert (no archiving, not scheduled) — see *Caveats*. |
+| `pgforge dump --name X [--out PATH] [--force] [--keep N] [--timeout SECS]` | `pg_dump -Fc` a live instance to a portable `.dump` file on the host (default `~/pgforge-dumps/<name>-<timestamp>.dump`). Prints the absolute path on stdout — copy it to your laptop and `pg_restore` it locally. `--keep N` prunes older dumps for that instance. |
+| `pgforge clone --source X --as Y` | Make an independent working copy of a running instance via `pg_basebackup` (streaming replication, not S3). Own port, volume, state, and pgbackrest stanza. |
+
+### Scheduled backups
+
+| Command | What it does |
+|---|---|
+| `pgforge cron --name X --hour H` | Set the daily auto-snapshot hour (0–23, local time) for an instance. `--off` disables it (manual only). |
+| `pgforge schedule install` | Install the macOS LaunchAgent that runs `pgforge snapshot --due` every 5 minutes — it picks up each instance's `cron` hour. `uninstall` / `status` manage it. |
+
+A typical setup: `pgforge create … --snapshot-hour 3`, then once
+`pgforge schedule install` — every instance is then backed up daily at its
+configured hour.
+
+### Maintenance
+
+| Command | What it does |
+|---|---|
+| `pgforge rotate --name X` | Recreate the container from current pgforge config, keeping the data volume (~10s downtime). Use to apply new hardening to existing instances. |
+| `pgforge reconfigure --name X` | Regenerate `pg_hba.conf` and `pg_ctl reload` — no restart. |
+| `pgforge resize --name X --preset small` | Change the tuning preset (RAM limit, `max_connections`, `shared_buffers`, …). Rebuilds `postgresql.conf` and recreates the container; data volume preserved. |
+| `pgforge upgrade --name X --to 19` | In-place major-version upgrade via `pg_upgrade`. Takes an automatic pre-upgrade snapshot (backup-enabled instances) so you can roll back with `pgforge restore`. |
+| `pgforge self-update [--force]` | Replace the running `pgforge` binary with the latest GitHub release (atomic rename). |
+
+## TUI mode
+
+`pgforge` with no subcommand launches the interactive dashboard (ratatui):
+
+- `↑`/`↓` or `j`/`k` — navigate the instance list
+- `s` snapshot · `c` clone · `R` rotate · `u` upgrade · `r` restore · `t` set snapshot hour
+- `Enter` — copy the connection string (with password) to the clipboard
+- `e` — full snapshot list · `?` — error detail · `q` — quit
+
+A red `⚠BACKUP` badge marks any instance whose scheduled backups are failing
+(last attempt newer than last success).
+
+## How it works
+
+Each instance is a Docker container running `postgres:<version>` with
+`pgbackrest` baked into the image. pgforge generates a hardened
+`postgresql.conf` and `pg_hba.conf` per instance, bind-mounts them, and pushes
+WAL asynchronously to S3 with `archive_timeout = 60s`. Instance state
+(passwords, port, preset, schedule, snapshot history) lives in `state.toml`
+files under the pgforge data directory; writes are atomic (temp-file + fsync +
+rename, with a parent-directory fsync) and serialized with an advisory lock so
+the scheduler, the TUI, and interactive commands can't clobber each other.
+
+## Caveats
+
+- **macOS host durability.** Docker Desktop / OrbStack / Colima run containers
+  in a Linux VM; fsync through that VM is weaker than bare-metal Linux. pgforge
+  uses `wal_sync_method = fdatasync` (the only Linux-valid choice — Postgres
+  runs inside a Linux container regardless of host OS). True RDS-grade
+  durability is not achievable on macOS — use a UPS for Mac mini deployments
+  and treat the ~60s S3 backup window as your real durability guarantee. A
+  Linux host with native Docker has honest fsync.
+- **Restored instances are inert by design.** `pgforge restore` reads the
+  source's S3 repo, then boots the new instance with `archive_mode = off` and
+  backups/scheduling disabled — so a restored cluster (which runs on a new
+  timeline) can never push WAL into the *source's* stanza and corrupt its
+  backup chain. A restored instance is fully queryable and read-write; treat it
+  as a recovery / forensic copy. `pgforge snapshot` on it is refused. Promoting
+  a restored instance to a fully backup-enabled primary is not yet supported.
+- **No HA.** Single-host by design — no replication, no failover.
+
+## Upgrading existing instances
+
+After updating the `pgforge` binary, existing instances keep running on their
+old generated config until recreated. To apply current hardening + config
+fixes without losing data:
+
+```bash
+pgforge rotate --name X
+```
+
+`rotate` also ensures the `pgreplica` role exists (a non-SUPERUSER role used
+for clone-source replication; instances created by older pgforge versions may
+lack it). Fresh instances get it automatically.
+
 ## Building from source
 
 Only needed if you're developing on pgforge itself.
 
-1. Install Rust 1.80+ and a working Docker engine.
-2. Build:
-   ```bash
-   cargo build --release
-   ```
-
-## Quick start
-
-1. Install pgforge (see above) and start your Docker engine.
-2. Configure S3 credentials. Create `~/.config/pgforge/config.toml` (Linux) or
-   `~/Library/Application Support/dev.pgforge.pgforge/config.toml` (macOS):
-   ```toml
-   port_range_start = 5433
-   port_range_end = 5500
-
-   [s3]
-   bucket = "your-pgforge-bucket"
-   region = "eu-central-1"
-   endpoint = "s3.eu-central-1.amazonaws.com"
-   access_key = "AKIA…"
-   secret_key = "…"
-   ```
-3. Spawn an instance. You pick two passwords here — they don't exist anywhere
-   yet; pgforge creates the postgres roles with whatever you supply, and the
-   same strings are then what you use to connect:
-
-   - `PGFORGE_APP_PASSWORD` — password for the **application user** (default
-     name `leads`). This is your "database password" — what `psql`, your app,
-     ORMs, etc. use to connect.
-   - `PGFORGE_PGBACKREST_PASSWORD` — password for the internal `pgbackrest`
-     replication role (used for backups and `pgforge clone`). Not used by
-     your application code. Skip this one if you're using `--no-backup`.
-
-   ```bash
-   PGFORGE_APP_PASSWORD=$(openssl rand -base64 24) \
-   PGFORGE_PGBACKREST_PASSWORD=$(openssl rand -base64 24) \
-   pgforge create \
-       --name billing \
-       --preset tiny \
-       --version 18
-   ```
-
-   For local dev / testing without S3, pass `--no-backup` — no pgbackrest
-   role is created so the second password isn't needed:
-   ```bash
-   PGFORGE_APP_PASSWORD=changeme pgforge create \
-       --name dev --preset tiny --version 18 --no-backup
-   ```
-   No-backup instances run hardened postgres but don't push WAL anywhere
-   and refuse `snapshot` / `clone` / `restore`.
-
-   Both passwords are saved in plaintext to
-   `~/Library/Application Support/dev.pgforge.pgforge/instances/<name>/state.toml`
-   (mode 0600). The TUI's `[Enter]` shortcut reads them from there to
-   build a ready-to-paste connection URI.
-
-4. Connect, substituting the password you set above:
-   ```bash
-   psql "postgresql://leads:<your-app-password>@127.0.0.1:<port>/billing"
-   ```
-   (The port is printed at the end of `create` and saved alongside the
-   passwords in `state.toml`. The TUI shows it next to each instance.)
-
-## TUI mode
-
-`pgforge` with no subcommand launches an interactive dashboard
-(ratatui). Keybinds:
-
-- `↑`/`↓` or `j`/`k` — navigate instance list
-- `s` snapshot · `c` clone · `R` rotate · `u` upgrade · `r` restore
-- `Enter` — copy connection string (with password) to clipboard
-- `e` — full snapshot list · `?` — error detail · `q` quit
-
-## Day-2 operations
-
 ```bash
-pgforge ls                                # list managed instances
-pgforge status --name billing             # cpu / mem / connections / sizes
-pgforge snapshot --name billing           # on-demand full backup to S3
-pgforge snapshots --name billing          # backup list + PITR window
-pgforge restore --source billing --as billing-recovery
-pgforge clone --source billing --as billing-staging
-pgforge reconfigure --name billing        # regenerate pg_hba + pg_ctl reload
-pgforge rotate --name billing             # recreate container, keep data volume
-pgforge upgrade --name billing --to 19    # pg_upgrade with auto pre-snapshot
+# Rust 1.88+ and a working Docker engine
+cargo build --release
+cargo test                       # unit + integration suite
+PGFORGE_E2E=1 cargo test          # also runs the gated end-to-end tests
+                                  # (needs a real Docker engine + S3 config)
 ```
 
-## Snapshots and restore
-
-Take an on-demand full backup of a running instance:
-
-```bash
-pgforge snapshot --name billing --label "before-migration"
-# Snapshot taken: 20260511-141259F (label=Some("before-migration"), taken_at=2026-05-11T14:12:59Z)
-```
-
-List snapshots:
-
-```bash
-pgforge snapshots --name billing
-```
-
-Restore as a new instance alongside the source (does not touch source):
-
-```bash
-# Restore the latest backup
-pgforge restore --source billing --as billing-recovery
-
-# Or PITR to a specific moment
-pgforge restore --source billing --as billing-recovery \
-    --target-time "2026-05-10T14:23:00Z"
-```
-
-The restored instance gets its own port, volume, and state file. The source
-keeps running untouched. Both are visible via `docker ps`. Connect to the
-restored instance with the connection string printed at the end.
-
-Backups live in your S3 bucket under `pgforge/<instance>/`. `pgforge restore`
-reads from the source instance's repo path, even when starting a new
-instance under a different name — so you can keep both around or kill the
-recovery instance once you've copied what you need.
-
-## Cloning
-
-Make a working copy of a running instance for staging / migration testing.
-Uses streaming replication (`pg_basebackup`) under the hood, not S3.
-
-```bash
-pgforge clone --source billing --as billing-staging
-# Clone ready:
-#   postgresql://leads:***@127.0.0.1:5435/billing
-```
-
-The clone is independent: own port, own volume, own state file, own backup
-repo path, own pgbackrest stanza. The source keeps running untouched.
-
-### Migration: existing instances created before Plan 3.5
-
-Plan 3.5 introduced a dedicated `pgreplica` role (non-SUPERUSER) used for
-TCP replication — `pgbackrest` (SUPERUSER) is no longer exposed over the
-docker bridge. Instances created before Plan 3.5 only have the
-`pgbackrest` role and cannot serve as clone sources until you add
-`pgreplica` manually:
-
-```bash
-docker exec -u postgres pgforge_<instance> psql -c \
-    "CREATE ROLE pgreplica WITH LOGIN REPLICATION PASSWORD '<same-pgbackrest-password>';"
-pgforge reconfigure --name <instance>   # regenerates pg_hba.conf and reloads
-```
-
-For fresh instances created with Plan 3.5+ this is automatic.
-
-## Architecture
-
-Each instance is a Docker container running `postgres:<version>` with
-`pgbackrest` baked into the image, hardened defaults applied via a generated
-`postgresql.conf`, and WAL pushed asynchronously to S3 with a 60-second
-`archive_timeout` (so worst-case data loss on a host crash is ~60s).
-
-See `docs/plans/2026-05-11-foundation-and-create.md` for the implementation
-plan that built this scaffold, and the upcoming `2026-XX-XX-*.md` plans for
-snapshot / restore / clone / upgrade / TUI.
-
-## Migration from pre-Plan-4 instances
-
-Plan 4 fixed a Plan-1-era bug where `/etc/postgresql/postgresql.conf` and
-`/etc/postgresql/pg_hba.conf` were bind-mounted but ignored — postgres was
-running on all-default config (archive_mode=off, default tuning, no
-hardened pg_hba). To pick up the fix on existing instances without losing
-data:
-
-```bash
-pgforge rotate --name billing
-```
-
-`rotate` stops + removes the container, regenerates configs, recreates
-the container on the SAME data volume with current cmd flags
-(`-c config_file=… -c hba_file=…`). Plus it ensures the post-Plan-3.5
-`pgreplica` role exists for clone-source instances.
-
-## Caveats
-
-- **macOS host**: Docker Desktop and OrbStack run containers in a Linux VM.
-  fsync semantics through that VM are weaker than bare-metal Linux. pgforge
-  uses `wal_sync_method = fdatasync` (the only Linux-valid choice — postgres
-  runs inside a Linux container regardless of host OS), so the F_FULLFSYNC
-  path doesn't apply. True RDS-grade durability is not achievable on macOS
-  — use a UPS for Mac mini deployments and rely on the 60-second S3 backup
-  window as your real durability guarantee.
-- **No HA**: pgforge is intentionally single-host, no replication, no
-  failover. Same model as RDS Single-AZ.
-- **Restored instances and pgbackrest stanza**: `pgforge restore`
-  generates `pgbackrest.conf` with the SOURCE instance's repo path so the
-  restore can read source backups. After PITR-promotion the restored
-  cluster gets a new system identifier — pgbackrest will then reject
-  `archive-push` to the source's stanza, and `pgforge snapshot
-  <restored>` is not supported. Treat restored instances as read-only
-  forensic copies for now. Promoting a restored instance to a fully
-  backed-up primary is a Plan 4 item.
+Design specs and implementation plans live under `docs/superpowers/`.
