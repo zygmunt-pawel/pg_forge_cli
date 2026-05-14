@@ -36,3 +36,15 @@ pub fn resolve_dump_path(
 pub fn is_valid_custom_dump(head: &[u8]) -> bool {
     head.starts_with(b"PGDMP")
 }
+
+/// Parse the "Available" column (1K blocks) from `df -P -k <dir>` output.
+/// POSIX (`-P`) format guarantees one data line, columns:
+/// Filesystem, 1024-blocks, Used, Available, Capacity, Mounted-on.
+pub fn parse_df_available_kb(df_output: &str) -> Option<u64> {
+    let data_line = df_output.lines().nth(1)?;
+    data_line.split_whitespace().nth(3)?.parse::<u64>().ok()
+}
+
+/// Minimum free space (KiB) required before starting a dump. 5 GiB — the
+/// dump dir shares the disk with live PG data volumes.
+pub const MIN_FREE_KB: u64 = 5 * 1024 * 1024;
