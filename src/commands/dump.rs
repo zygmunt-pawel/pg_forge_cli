@@ -146,11 +146,13 @@ pub async fn run_with_engine<E: DockerEngine>(
     }
 
     // Resolve the dump dir + final path.
+    // When `--out` is a bare filename (e.g. `billing.dump`), `parent()` returns
+    // `Some("")` — an empty path, NOT `None` — so we must also guard for that.
     let dump_dir = match &args.out {
-        Some(out) => out
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from(".")),
+        Some(out) => match out.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        },
         None => default_dump_dir()?,
     };
     crate::util::fs::create_secret_dir(&dump_dir)?;
@@ -174,6 +176,9 @@ pub async fn run_with_engine<E: DockerEngine>(
         .arg(&dump_dir)
         .output()
         .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("df: {e}")))?;
+    // If `df` itself fails or exits non-zero, stdout is empty -> parse returns
+    // None -> the precheck is skipped (not a hard error): the dump's own write
+    // path will still surface ENOSPC.
     if let Some(avail) = parse_df_available_kb(&String::from_utf8_lossy(&df_out.stdout))
         && avail < MIN_FREE_KB
     {
