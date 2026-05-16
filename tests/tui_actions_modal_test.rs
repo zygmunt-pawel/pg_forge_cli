@@ -59,6 +59,22 @@ fn esc_in_actions_menu_closes_it() {
 }
 
 #[test]
+fn help_modal_lists_global_and_per_instance_keys() {
+    let m = Modal::Help;
+    let buf = draw_into(80, 24, |f| {
+        let full = ratatui::layout::Rect { x: 0, y: 0, width: 80, height: 24 };
+        modal::render(f, full, &m);
+    });
+    for needle in &["pgforge — keybinds",
+                    "[n]ew", "[a]ctions", "[?]", "[q]uit",
+                    "[s] Snapshot", "[c] Clone",
+                    "[esc]"] {
+        assert!(buffer_contains(&buf, needle),
+            "missing {needle:?}\n{}", tui_render_helpers::buffer_to_string(&buf));
+    }
+}
+
+#[test]
 fn d_in_actions_menu_opens_destroy_confirm() {
     let mut s = AppState::default();
     s.apply_event(Event::InstancesListed(vec![row("billing")]));

@@ -626,6 +626,12 @@ impl AppState {
             },
             Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. })
             | Some(Modal::ActionsMenu { .. }) | None => Action::Nothing,
+            Some(Modal::Help) => {
+                if matches!(k.code, KeyCode::Char('?')) {
+                    self.modal = None;
+                }
+                Action::Nothing
+            }
         };
         match action {
             Action::Nothing => {}

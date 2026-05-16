@@ -201,6 +201,9 @@ pub enum Modal {
     /// header ("Connection string" vs "Instance ready"), used purely
     /// for retrieval — user selects with mouse + Cmd+C to copy.
     ConnectionString { name: String, uri: String },
+    /// Global keybind reference. Opened by `?` when there is no
+    /// last_op_error to detail (otherwise `?` shows the error).
+    Help,
     /// Preset-resize wizard. ← → / space cycles `new` through tiny ↔
     /// small ↔ medium ↔ large; Enter transitions to Confirm. `current`
     /// is shown read-only so the user knows what they're changing from.

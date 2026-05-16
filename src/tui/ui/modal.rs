@@ -36,8 +36,40 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         return;
     }
 
+    if matches!(modal, Modal::Help) {
+        let lines = vec![
+            Line::from(""),
+            Line::from("  Global"),
+            Line::from("    [n]ew instance"),
+            Line::from("    [a]ctions on selected instance"),
+            Line::from("    [↑/↓/j/k] navigate"),
+            Line::from("    [↵]      copy connection URI"),
+            Line::from("    [?]      this help / error detail"),
+            Line::from("    [q]uit"),
+            Line::from(""),
+            Line::from("  Inside Actions menu"),
+            Line::from("    [s] Snapshot       [c] Clone"),
+            Line::from("    [R] Rotate         [p] Preset (resize)"),
+            Line::from("    [t] snapshot Time  [r] Restore from"),
+            Line::from("    [d] Destroy        [u] Upgrade"),
+            Line::from("    [e] snapshots History"),
+            Line::from(""),
+            Line::from("  [esc] close any modal"),
+        ];
+        let area = centered_rect(54, lines.len() as u16 + 2, full);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" pgforge — keybinds ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(lines), inner);
+        return;
+    }
+
     let (w, h) = match modal {
         Modal::ActionsMenu { .. } => unreachable!(),
+        Modal::Help => unreachable!(),
         Modal::CloneAs { .. } | Modal::UpgradeTo { .. } => (60, 9),
         Modal::RestoreAs { .. } => (78, 13),
         Modal::Confirm { .. } => (60, 7),
@@ -52,7 +84,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
     match modal {
-        Modal::ActionsMenu { .. } => unreachable!(),
+        Modal::ActionsMenu { .. } | Modal::Help => unreachable!(),
         Modal::CloneAs { source, input } => single_input(f, area, &format!("Clone {source} as"), &input.buf, input.cursor),
         Modal::UpgradeTo { source, input } => single_input(f, area, &format!("Upgrade {source} — target version"), &input.buf, input.cursor),
         Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest, uptime_cap_min } => {
