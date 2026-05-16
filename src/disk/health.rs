@@ -155,6 +155,49 @@ fn walk_up_to_existing(start: &Path) -> Result<PathBuf, std::io::Error> {
     }
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait DockerRootDirSource: Send + Sync {
+    async fn docker_root_dir(&self) -> anyhow::Result<Option<String>>;
+}
+
+/// Aggregate disk-health across the three filesystems pgforge actually
+/// uses: Docker volumes (host-side), pgforge state dir, pgforge dumps
+/// dir. Best-effort: any sub-failure drops that mount silently; all
+/// failures → Unknown.
+///
+/// `state_root` and `dumps_root` are accepted as Option for testability;
+/// in production the caller passes None and we resolve via the standard
+/// XDG paths.
+pub async fn check_disk_health<D: DockerRootDirSource>(
+    docker: &D,
+    state_root: Option<PathBuf>,
+    dumps_root: Option<PathBuf>,
+) -> DiskHealth {
+    let docker_root = docker
+        .docker_root_dir()
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "/var/lib/docker".to_string());
+    let state = state_root.unwrap_or_else(
+        crate::state::instance::InstanceState::default_state_root,
+    );
+    let dumps = match dumps_root {
+        Some(p) => p,
+        None => crate::commands::dump::default_dump_dir()
+            .unwrap_or_else(|_| PathBuf::from("/tmp")),
+    };
+
+    let paths = vec![
+        ("docker", PathBuf::from(docker_root)),
+        ("state", state),
+        ("dumps", dumps),
+    ];
+    DiskHealth::aggregate(measure_dedup(paths))
+}
+
 /// Measure each labelled path and drop duplicates by device id
 /// (st_dev). The first labelled occurrence wins.
 pub fn measure_dedup(paths: Vec<(&str, PathBuf)>) -> Vec<MountUsage> {

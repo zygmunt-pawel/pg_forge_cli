@@ -644,3 +644,15 @@ impl DockerEngine for BollardEngine {
         Ok(buf)
     }
 }
+
+#[async_trait]
+impl crate::disk::health::DockerRootDirSource for BollardEngine {
+    async fn docker_root_dir(&self) -> anyhow::Result<Option<String>> {
+        let info = self
+            .docker
+            .info()
+            .await
+            .map_err(|e| anyhow::anyhow!("docker info: {e}"))?;
+        Ok(info.docker_root_dir)
+    }
+}
