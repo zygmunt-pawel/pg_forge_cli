@@ -31,85 +31,41 @@ RDS Single-AZ.
 
 ## Install
 
-Two things on the host: a headless Docker engine and the `pgforge` binary. Both
-install and operate entirely over SSH — no GUI session required. Verified
-end-to-end on a clean Mac mini (Apple Silicon, macOS 26).
+pgforge needs Docker and the `pgforge` binary on the host.
 
-### 1. Docker engine — Colima (headless, recommended for Mac mini servers)
+### 1. Docker
 
-[Colima](https://github.com/abiosoft/colima) drives Docker through Apple's
-native Virtualization framework. Unlike OrbStack or Docker Desktop, it has
-no GUI app, no Gatekeeper dance, no Rosetta install prompt — pure CLI, runs
-on a freshly-installed Mac mini you've never sat at.
+Install Docker for your distro — see the [official docs](https://docs.docker.com/engine/install/).
+Add your user to the `docker` group so the socket at `/var/run/docker.sock` is reachable
+without `sudo`:
 
 ```bash
-# install Homebrew (Apple Silicon — adjust path on Intel Macs)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-eval "$(/opt/homebrew/bin/brew shellenv)"
-
-# install colima + docker CLI
-brew install colima docker
-
-# start the VM (vz = native Apple Virtualization, no QEMU emulation)
-colima start --vm-type vz --cpu 4 --memory 6 --disk 60
-
-# expose DOCKER_HOST in future shells
-cat >> ~/.zprofile <<'EOF'
-
-# pgforge: ensure colima is running on every login + point docker at its socket
-export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
-colima status >/dev/null 2>&1 || colima start --vm-type vz --cpu 4 --memory 6 --disk 60 >/dev/null 2>&1 &
-EOF
-source ~/.zprofile
-
-# verify
-docker ps
-# CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS   PORTS   NAMES
+sudo usermod -aG docker $USER
+# Log out and back in (or `newgrp docker`) for the group change to apply.
+docker ps   # should succeed without sudo
 ```
 
-The `.zprofile` snippet means: every interactive SSH login checks if
-Colima is up, and starts it in the background if not. After a reboot,
-your first SSH connection brings docker back; pgforge containers with
-`restart=unless-stopped` then come back on their own.
-
-(For a desktop Mac where you'd rather click an icon, [OrbStack](https://orbstack.dev)
-is faster and lighter than Docker Desktop — `brew install --cask orbstack`,
-then **launch it once via the GUI** to accept the Gatekeeper / helper /
-Rosetta prompts. Don't try this over SSH; it doesn't work.)
-
-On a Linux host, just install Docker normally — the socket is at
-`/var/run/docker.sock` and pgforge picks it up with no extra setup.
-
-#### Troubleshooting
-
-- **`brew services start colima` fails with `Domain does not support
-  specified action`** — `launchctl`'s `gui/<uid>` domain only exists when
-  the user has an active GUI (Aqua) session, which SSH alone doesn't
-  provide. Use the `.zprofile` pattern above instead of `brew services`.
-- **`docker: command not found`** — your shell still has the pre-install
-  PATH. Open a new terminal, or `source ~/.zprofile`.
-- **`colima start` says VM exited unexpectedly with a Rosetta error** —
-  that's the OrbStack failure mode. With Colima `--vm-type vz` you don't
-  need Rosetta unless you specifically run x86_64 containers; PG images
-  are multi-arch.
+If `docker ps` says `permission denied while trying to connect to the Docker daemon
+socket`, the group change hasn't taken effect yet — start a new shell.
 
 ### 2. pgforge binary
 
-Universal macOS binary (works on Apple Silicon + Intel):
+x86_64 Linux binary:
 
 ```bash
 mkdir -p ~/.local/bin
-curl -L https://github.com/zygmunt-pawel/pg_forge_cli/releases/latest/download/pgforge \
+curl -L https://github.com/zygmunt-pawel/pg_forge_cli/releases/latest/download/pgforge-linux-x86_64 \
   -o ~/.local/bin/pgforge
 chmod +x ~/.local/bin/pgforge
-xattr -d com.apple.quarantine ~/.local/bin/pgforge 2>/dev/null || true
 
 # add ~/.local/bin to PATH if not already there
-grep -q '/.local/bin' ~/.zprofile || echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.zprofile
-source ~/.zprofile
+grep -q '/.local/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.profile
+source ~/.profile
 
 pgforge --version
 ```
+
+For other architectures, build from source (see *Building from source* at the bottom).
 
 ## Configuration
 
@@ -197,11 +153,20 @@ Run `pgforge <command> --help` for the full flag list of any command.
 | Command | What it does |
 |---|---|
 | `pgforge cron --name X --hour H` | Set the daily auto-snapshot hour (0–23, local time) for an instance. `--off` disables it (manual only). |
-| `pgforge schedule install` | Install the macOS LaunchAgent that runs `pgforge snapshot --due` every 5 minutes — it picks up each instance's `cron` hour. `uninstall` / `status` manage it. |
+| `pgforge schedule install` | Install the systemd user timer that runs `pgforge snapshot --due` every 5 minutes — it picks up each instance's `cron` hour. `uninstall` / `status` manage it. |
 
 A typical setup: `pgforge create … --snapshot-hour 3`, then once
 `pgforge schedule install` — every instance is then backed up daily at its
 configured hour.
+
+On a headless server, run once after `schedule install`:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+so the systemd user timer fires even when no user session is active. `pgforge
+schedule install` will print a loud warning if linger isn't enabled.
 
 ### Maintenance
 
@@ -225,6 +190,11 @@ configured hour.
 A red `⚠BACKUP` badge marks any instance whose scheduled backups are failing
 (last attempt newer than last success).
 
+Clipboard on a headless server uses OSC52 (terminal escape sequence) — works
+through SSH if your local terminal supports it (iTerm2, kitty, WezTerm,
+Alacritty, tmux ≥ 3.3 do). If your terminal doesn't, copy is a no-op and a
+flash warning shows.
+
 ## How it works
 
 Each instance is a Docker container running `postgres:<version>` with
@@ -238,13 +208,6 @@ the scheduler, the TUI, and interactive commands can't clobber each other.
 
 ## Caveats
 
-- **macOS host durability.** Docker Desktop / OrbStack / Colima run containers
-  in a Linux VM; fsync through that VM is weaker than bare-metal Linux. pgforge
-  uses `wal_sync_method = fdatasync` (the only Linux-valid choice — Postgres
-  runs inside a Linux container regardless of host OS). True RDS-grade
-  durability is not achievable on macOS — use a UPS for Mac mini deployments
-  and treat the ~60s S3 backup window as your real durability guarantee. A
-  Linux host with native Docker has honest fsync.
 - **Restored instances are inert by design.** `pgforge restore` reads the
   source's S3 repo, then boots the new instance with `archive_mode = off` and
   backups/scheduling disabled — so a restored cluster (which runs on a new
