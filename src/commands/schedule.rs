@@ -45,7 +45,7 @@ pub fn render_service(exe: &str) -> String {
          \n\
          [Service]\n\
          Type=oneshot\n\
-         ExecStart={exe} snapshot --due\n\
+         ExecStart=\"{exe}\" snapshot --due\n\
          Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
     )
 }
@@ -111,10 +111,10 @@ fn run_loginctl(args: &[&str]) -> Result<Output> {
 
 /// True iff `loginctl show-user $USER -p Linger` reports `Linger=yes`.
 fn linger_enabled() -> bool {
-    let user = match std::env::var("USER") {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .ok();
+    let Some(user) = user else { return false };
     let Ok(out) = run_loginctl(&["show-user", &user, "-p", "Linger"]) else {
         return false;
     };
@@ -142,8 +142,8 @@ pub fn install() -> Result<PathBuf> {
         source: e,
     })?;
 
-    let svc_path = service_path()?;
-    let tmr_path = timer_path()?;
+    let svc_path = dir.join(format!("{AGENT_LABEL}.service"));
+    let tmr_path = dir.join(format!("{AGENT_LABEL}.timer"));
     std::fs::write(&svc_path, render_service(&exe_str)).map_err(|e| PgForgeError::Io {
         path: svc_path.clone(),
         source: e,
@@ -226,7 +226,7 @@ pub fn status() -> Result<ScheduleStatus> {
     .and_then(|o| {
         if o.status.success() {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() || s == "n/a" { None } else { Some(s) }
+            if s.is_empty() || s == "n/a" || s == "0" { None } else { Some(s) }
         } else {
             None
         }
