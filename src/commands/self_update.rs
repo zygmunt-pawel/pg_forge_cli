@@ -2,10 +2,10 @@
 //! GitHub Releases and atomically replace the running binary.
 //!
 //! Strategy is intentionally simple: shell out to `curl` (always
-//! present on macOS / Linux) so we don't add a heavy HTTP/TLS
+//! present on Linux) so we don't add a heavy HTTP/TLS
 //! dependency just for this rarely-used path. Two curl calls:
 //!  1. GitHub API for the latest release tag.
-//!  2. Direct download of the universal macOS binary asset.
+//!  2. Direct download of the Linux x86_64 binary asset.
 //!
 //! Atomic replacement = write to `<current_exe>.new` on the same
 //! filesystem, chmod +x, then `rename` it over the live binary. On
@@ -50,7 +50,7 @@ pub async fn run(force: bool) -> Result<SelfUpdateOutcome> {
     let tmp = sibling_with_suffix(&exe, ".new");
 
     let url = format!(
-        "https://github.com/{repo}/releases/download/{tag}/pgforge",
+        "https://github.com/{repo}/releases/download/{tag}/pgforge-linux-x86_64",
         repo = GITHUB_REPO,
         tag = latest,
     );
