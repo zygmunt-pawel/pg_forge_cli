@@ -205,6 +205,162 @@ impl AppState {
         }
     }
 
+    pub(crate) fn open_snapshot_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string)
+            && !self.in_progress.contains_key(&n) {
+            self.pending_ops.push((n, OpKind::Snapshot));
+        }
+    }
+
+    pub(crate) fn open_clone_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string) {
+            self.modal = Some(Modal::CloneAs { source: n, input: TextField::default() });
+        }
+    }
+
+    pub(crate) fn open_time_for_selected(&mut self) {
+        // Auto-snapshot time editor. Reads current value off the
+        // freshly-loaded state.toml (live values aren't on the
+        // ls summary). Empty list → no-op.
+        if let Some(n) = self.selected_name().map(str::to_string) {
+            let root = crate::state::instance::InstanceState::default_state_root();
+            if let Ok(state) = crate::state::instance::InstanceState::load_under(&root, &n) {
+                let cur = state.instance.snapshot_hour;
+                self.modal = Some(Modal::ScheduleEdit {
+                    name: n,
+                    current: cur,
+                    new: cur,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn open_preset_for_selected(&mut self) {
+        // Preset resize wizard — cycle to a different tuning
+        // (tiny/small/medium/large). Preview parameters live
+        // in the modal; submit transitions to Confirm.
+        if let Some(inst) = self.selected_instance() {
+            use std::str::FromStr;
+            if let Ok(cur) = crate::domain::preset::Preset::from_str(&inst.preset_label) {
+                let new = next_preset(cur);
+                self.modal = Some(Modal::ResizeTo {
+                    name: inst.name.clone(),
+                    current: cur,
+                    new,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn trigger_self_update(&mut self) {
+        // pg_upgrade (major-version pg) is rare enough that it
+        // lives only in the CLI now. `[u]` in the TUI means
+        // "self-update pgforge from GitHub releases".
+        if !self.pending_self_update {
+            self.pending_self_update = true;
+            self.flash = Some(Flash {
+                msg: "checking for pgforge update…".into(),
+                kind: FlashKind::Info,
+                at: Instant::now(),
+            });
+        }
+    }
+
+    pub(crate) fn open_restore_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string) {
+            let pitr_earliest = self
+                .snapshots
+                .get(&n)
+                .and_then(|v| v.pitr.earliest.clone());
+            // Also capture container uptime — fresh instances
+            // without any full backup have no PITR window yet,
+            // but they STILL have an absolute upper bound on
+            // "how far back can you restore": the container
+            // birth. submit_modal will use whichever cap is
+            // tighter.
+            let uptime_min = self
+                .statuses
+                .get(&n)
+                .and_then(|s| s.uptime_seconds)
+                .map(|s| (s / 60) as u32);
+            self.modal = Some(Modal::RestoreAs {
+                source: n,
+                as_input: TextField::default(),
+                minutes_ago: 0,
+                focus: 0,
+                pitr_earliest,
+                uptime_cap_min: uptime_min,
+            });
+        }
+    }
+
+    pub(crate) fn open_rotate_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string) {
+            self.modal = Some(Modal::Confirm {
+                kind: PendingDestructiveOp::Rotate { name: n.clone() },
+                prompt: format!("Rotate {n}? Container restarts (~10s downtime), volume preserved."),
+            });
+        }
+    }
+
+    pub(crate) fn open_destroy_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string) {
+            self.modal = Some(Modal::Confirm {
+                kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: false },
+                prompt: format!(
+                    "Destroy {n}? This drops the container AND its data volume. S3 backups are RETAINED — restore later with `pgforge restore`. Press [D] (shift) to also wipe S3 backups."
+                ),
+            });
+        }
+    }
+
+    pub(crate) fn open_destroy_with_delete_backups_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string) {
+            self.modal = Some(Modal::Confirm {
+                kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: true },
+                prompt: format!(
+                    "Destroy {n} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
+                ),
+            });
+        }
+    }
+
+    pub(crate) fn open_snapshots_history_for_selected(&mut self) {
+        if let Some(n) = self.selected_name().map(str::to_string)
+            && let Some(v) = self.snapshots.get(&n).cloned() {
+            self.modal = Some(Modal::Snapshots { name: n, view: v });
+        }
+    }
+
+    pub(crate) fn open_create_wizard(&mut self) {
+        // Open the Create wizard with pre-generated defaults.
+        use crate::util::random;
+        let mut name = random::instance_name();
+        // Avoid collisions with existing instances (extremely unlikely
+        // but cheap to be safe — 4 hex × random = ~65k space).
+        let existing: std::collections::HashSet<&str> =
+            self.instances.iter().map(|r| r.name.as_str()).collect();
+        for _ in 0..16 {
+            if !existing.contains(name.as_str()) { break; }
+            name = random::instance_name();
+        }
+        let name_field = TextField { buf: name, cursor: 0 };
+        let app_user_field = TextField { buf: "app".into(), cursor: 0 };
+        let pg_field = TextField { buf: "18".into(), cursor: 0 };
+        self.modal = Some(Modal::Create {
+            name: name_field,
+            app_user: app_user_field,
+            pg_version: pg_field,
+            preset: crate::domain::preset::Preset::Small,
+            no_backup: true, // safer default — S3 isn't configured on most fresh setups
+            retain_days: 30,
+            snapshot_hour: Some(3),
+            focus: 0,
+            generated_password: random::password(24),
+            generated_pgbackrest_password: random::password(24),
+        });
+    }
+
     fn handle_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         if self.modal.is_some() {
@@ -223,161 +379,27 @@ impl AppState {
             }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => { self.last_op_error = None; }
-            KeyCode::Char('s') => {
-                if let Some(n) = self.selected_name().map(str::to_string)
-                    && !self.in_progress.contains_key(&n) {
-                    self.pending_ops.push((n, OpKind::Snapshot));
-                }
-            }
-            KeyCode::Char('c') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    self.modal = Some(Modal::CloneAs { source: n, input: TextField::default() });
-                }
-            }
-            KeyCode::Char('t') => {
-                // Auto-snapshot time editor. Reads current value off the
-                // freshly-loaded state.toml (live values aren't on the
-                // ls summary). Empty list → no-op.
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    let root = crate::state::instance::InstanceState::default_state_root();
-                    if let Ok(state) = crate::state::instance::InstanceState::load_under(&root, &n) {
-                        let cur = state.instance.snapshot_hour;
-                        self.modal = Some(Modal::ScheduleEdit {
-                            name: n,
-                            current: cur,
-                            new: cur,
-                        });
-                    }
-                }
-            }
-            KeyCode::Char('p') => {
-                // Preset resize wizard — cycle to a different tuning
-                // (tiny/small/medium/large). Preview parameters live
-                // in the modal; submit transitions to Confirm.
-                if let Some(inst) = self.selected_instance() {
-                    use std::str::FromStr;
-                    if let Ok(cur) = crate::domain::preset::Preset::from_str(&inst.preset_label) {
-                        let new = next_preset(cur);
-                        self.modal = Some(Modal::ResizeTo {
-                            name: inst.name.clone(),
-                            current: cur,
-                            new,
-                        });
-                    }
-                }
-            }
-            KeyCode::Char('u') => {
-                // pg_upgrade (major-version pg) is rare enough that it
-                // lives only in the CLI now. `[u]` in the TUI means
-                // "self-update pgforge from GitHub releases".
-                if !self.pending_self_update {
-                    self.pending_self_update = true;
-                    self.flash = Some(Flash {
-                        msg: "checking for pgforge update…".into(),
-                        kind: FlashKind::Info,
-                        at: Instant::now(),
-                    });
-                }
-            }
-            KeyCode::Char('r') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    let pitr_earliest = self
-                        .snapshots
-                        .get(&n)
-                        .and_then(|v| v.pitr.earliest.clone());
-                    // Also capture container uptime — fresh instances
-                    // without any full backup have no PITR window yet,
-                    // but they STILL have an absolute upper bound on
-                    // "how far back can you restore": the container
-                    // birth. submit_modal will use whichever cap is
-                    // tighter.
-                    let uptime_min = self
-                        .statuses
-                        .get(&n)
-                        .and_then(|s| s.uptime_seconds)
-                        .map(|s| (s / 60) as u32);
-                    self.modal = Some(Modal::RestoreAs {
-                        source: n,
-                        as_input: TextField::default(),
-                        minutes_ago: 0,
-                        focus: 0,
-                        pitr_earliest,
-                        uptime_cap_min: uptime_min,
-                    });
-                }
-            }
-            KeyCode::Char('R') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    self.modal = Some(Modal::Confirm {
-                        kind: PendingDestructiveOp::Rotate { name: n.clone() },
-                        prompt: format!("Rotate {n}? Container restarts (~10s downtime), volume preserved."),
-                    });
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    self.modal = Some(Modal::Confirm {
-                        kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: false },
-                        prompt: format!(
-                            "Destroy {n}? This drops the container AND its data volume. S3 backups are RETAINED — restore later with `pgforge restore`. Press [D] (shift) to also wipe S3 backups."
-                        ),
-                    });
-                }
-            }
-            KeyCode::Char('D') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    self.modal = Some(Modal::Confirm {
-                        kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: true },
-                        prompt: format!(
-                            "Destroy {n} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
-                        ),
-                    });
-                }
-            }
+            KeyCode::Char('s') => { self.open_snapshot_for_selected(); }
+            KeyCode::Char('c') => { self.open_clone_for_selected(); }
+            KeyCode::Char('t') => { self.open_time_for_selected(); }
+            KeyCode::Char('p') => { self.open_preset_for_selected(); }
+            KeyCode::Char('u') => { self.trigger_self_update(); }
+            KeyCode::Char('r') => { self.open_restore_for_selected(); }
+            KeyCode::Char('R') => { self.open_rotate_for_selected(); }
+            KeyCode::Char('d') => { self.open_destroy_for_selected(); }
+            KeyCode::Char('D') => { self.open_destroy_with_delete_backups_for_selected(); }
             KeyCode::Char('?') => {
                 if let Some(e) = &self.last_op_error {
                     self.modal = Some(Modal::ErrorDetail { msg: e.msg.clone() });
                 }
             }
-            KeyCode::Char('e') => {
-                if let Some(n) = self.selected_name().map(str::to_string)
-                    && let Some(v) = self.snapshots.get(&n).cloned() {
-                    self.modal = Some(Modal::Snapshots { name: n, view: v });
-                }
-            }
+            KeyCode::Char('e') => { self.open_snapshots_history_for_selected(); }
             KeyCode::Enter => {
                 if let Some(n) = self.selected_name().map(str::to_string) {
                     self.pending_clipboard.push(n);
                 }
             }
-            KeyCode::Char('n') => {
-                // Open the Create wizard with pre-generated defaults.
-                use crate::util::random;
-                let mut name = random::instance_name();
-                // Avoid collisions with existing instances (extremely unlikely
-                // but cheap to be safe — 4 hex × random = ~65k space).
-                let existing: std::collections::HashSet<&str> =
-                    self.instances.iter().map(|r| r.name.as_str()).collect();
-                for _ in 0..16 {
-                    if !existing.contains(name.as_str()) { break; }
-                    name = random::instance_name();
-                }
-                let name_field = TextField { buf: name, cursor: 0 };
-                let app_user_field = TextField { buf: "app".into(), cursor: 0 };
-                let pg_field = TextField { buf: "18".into(), cursor: 0 };
-                self.modal = Some(Modal::Create {
-                    name: name_field,
-                    app_user: app_user_field,
-                    pg_version: pg_field,
-                    preset: crate::domain::preset::Preset::Small,
-                    no_backup: true, // safer default — S3 isn't configured on most fresh setups
-                    retain_days: 30,
-                    snapshot_hour: Some(3),
-                    focus: 0,
-                    generated_password: random::password(24),
-                    generated_pgbackrest_password: random::password(24),
-                });
-            }
+            KeyCode::Char('n') => { self.open_create_wizard(); }
             _ => {}
         }
     }
@@ -1494,5 +1516,31 @@ mod tests {
         s.in_progress.insert("alpha".into(), RunningOp { kind: OpKind::Snapshot, started_at: Instant::now() });
         s.apply_event(Event::OpFinished { instance: "alpha".into(), kind: OpKind::Snapshot, result: Ok(()) });
         assert_eq!(s.refresh_requests, vec!["alpha".to_string()]);
+    }
+
+    fn state_with_two_instances() -> AppState {
+        let mut s = AppState::default();
+        s.apply_event(Event::InstancesListed(vec![row("a"), row("b")]));
+        s
+    }
+
+    #[test]
+    fn pressing_s_with_selection_opens_snapshot_modal_unchanged() {
+        let mut s = state_with_two_instances();
+        s.selected = 0;
+        s.apply_event(key(KeyCode::Char('s')));
+        // We won't assert on the modal type yet (will change in T11) — for now
+        // assert SOMETHING happened (modal opened OR op enqueued).
+        assert!(s.modal.is_some() || !s.pending_ops.is_empty(),
+            "expected s to trigger snapshot path; modal={:?} pending={:?}",
+            s.modal, s.pending_ops);
+    }
+
+    #[test]
+    fn pressing_d_with_selection_opens_destroy_modal_unchanged() {
+        let mut s = state_with_two_instances();
+        s.selected = 0;
+        s.apply_event(key(KeyCode::Char('d')));
+        assert!(matches!(s.modal, Some(Modal::Confirm { .. })));
     }
 }
