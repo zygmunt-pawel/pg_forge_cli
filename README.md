@@ -70,8 +70,7 @@ For other architectures, build from source (see *Building from source* at the bo
 ## Configuration
 
 pgforge reads one global config file with the host port range and S3
-credentials. Create `~/Library/Application Support/dev.pgforge.pgforge/config.toml`
-(macOS) or `~/.local/share/pgforge/config.toml` (Linux):
+credentials. Create `~/.config/pgforge/config.toml` (XDG config dir):
 
 ```toml
 port_range_start = 5433
@@ -109,7 +108,7 @@ psql "postgresql://leads:<your-app-password>@127.0.0.1:<port>/billing"
   code. Not needed with `--no-backup`.
 
 Both passwords are stored (plaintext, mode 0600) in
-`…/dev.pgforge.pgforge/instances/<name>/state.toml`.
+`~/.local/share/pgforge/instances/<name>/state.toml` (XDG data dir).
 
 For local dev / testing without S3, pass `--no-backup` — a plain hardened
 Postgres with no WAL archiving; `snapshot` / `clone` / `restore` are refused
@@ -202,8 +201,9 @@ Each instance is a Docker container running `postgres:<version>` with
 `postgresql.conf` and `pg_hba.conf` per instance, bind-mounts them, and pushes
 WAL asynchronously to S3 with `archive_timeout = 60s`. Instance state
 (passwords, port, preset, schedule, snapshot history) lives in `state.toml`
-files under the pgforge data directory; writes are atomic (temp-file + fsync +
-rename, with a parent-directory fsync) and serialized with an advisory lock so
+files under `~/.local/share/pgforge/instances/`; writes are atomic (temp-file
++ fsync + rename, with a parent-directory fsync) and serialized with an
+advisory lock so
 the scheduler, the TUI, and interactive commands can't clobber each other.
 
 ## Caveats
