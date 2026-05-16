@@ -22,7 +22,15 @@ pub fn spawn_pollers(
 ) {
     spawn_ls(tx.clone(), state_root.clone());
     spawn_status(tx.clone(), names_rx.clone(), state_root.clone());
-    spawn_snapshots(tx, names_rx, state_root);
+    spawn_snapshots(tx.clone(), names_rx, state_root);
+    // Disk-health poller wraps the same BollardEngine the other pollers
+    // create per-tick. Cheaper to share one connect() here.
+    if let Ok(docker) = crate::docker::bollard_engine::BollardEngine::connect() {
+        spawn_disk_health(std::sync::Arc::new(docker), tx);
+    } else {
+        tracing::warn!(target: "pgforge::tui::refresh",
+            "disk-health poller: BollardEngine::connect failed; status will be Unknown");
+    }
 }
 
 fn spawn_ls(tx: UnboundedSender<Event>, state_root: Option<PathBuf>) {
@@ -120,6 +128,41 @@ fn spawn_snapshots(
     });
 }
 
+const DISK_PERIOD: Duration = Duration::from_secs(15);
+const DISK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Periodic disk-health poller. Bounded per-tick by DISK_TIMEOUT to
+/// guard against a hung NFS / FUSE mount freezing the poller forever.
+/// On timeout / error → emits DiskHealth::unknown() so the TUI can
+/// show "Disk ?" instead of going stale.
+pub fn spawn_disk_health<D>(
+    docker: std::sync::Arc<D>,
+    tx: UnboundedSender<Event>,
+) -> tokio::task::JoinHandle<()>
+where
+    D: crate::disk::health::DockerRootDirSource + 'static,
+{
+    tokio::spawn(async move {
+        let mut iv = tokio::time::interval(DISK_PERIOD);
+        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            iv.tick().await;
+            let h = match tokio::time::timeout(
+                DISK_TIMEOUT,
+                crate::disk::health::check_disk_health(&*docker, None, None),
+            ).await {
+                Ok(h)  => h,
+                Err(_) => {
+                    tracing::warn!(target: "pgforge::tui::refresh",
+                        "disk-health poll timed out after {:?}", DISK_TIMEOUT);
+                    crate::disk::health::DiskHealth::unknown()
+                }
+            };
+            let _ = tx.send(Event::DiskHealthRefreshed(h));
+        }
+    })
+}
+
 /// On-demand refresh of a single instance — used after a successful op
 /// to surface the new state without waiting a poller tick.
 pub fn refresh_one(name: String, tx: UnboundedSender<Event>, state_root: Option<PathBuf>) {
@@ -136,4 +179,34 @@ pub fn refresh_one(name: String, tx: UnboundedSender<Event>, state_root: Option<
         let pitr = snapshots::pitr_window(&name, &docker, &root).await.unwrap_or_default();
         let _ = tx.send(Event::SnapshotsRefreshed { name, view: SnapshotsView { list, pitr } });
     });
+}
+
+#[cfg(test)]
+mod disk_health_poller_tests {
+    use super::*;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[tokio::test]
+    async fn spawn_disk_health_emits_event_within_two_ticks() {
+        // Use a sentinel implementation that returns Unknown immediately
+        // so the test doesn't depend on a Docker daemon.
+        struct InstantDocker;
+        #[async_trait::async_trait]
+        impl crate::disk::health::DockerRootDirSource for InstantDocker {
+            async fn docker_root_dir(&self) -> anyhow::Result<Option<String>> {
+                Ok(None)
+            }
+        }
+        let (tx, mut rx) = unbounded_channel();
+        let docker = std::sync::Arc::new(InstantDocker);
+        let h = spawn_disk_health(docker, tx);
+        // First tick fires immediately on interval start, so we should see
+        // an event in well under the 15s poll period.
+        let ev = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rx.recv(),
+        ).await.expect("event in 3s").expect("channel open");
+        assert!(matches!(ev, Event::DiskHealthRefreshed(_)));
+        h.abort();
+    }
 }

@@ -46,6 +46,10 @@ pub struct AppState {
     /// build the connection URI before showing the modal — kept out of
     /// `apply_event` to preserve its purity.
     pub pending_show_created: Vec<String>,
+    /// Latest disk-health snapshot from the background poller.
+    /// None until the first poll result arrives (~15s after TUI starts,
+    /// but the first tick fires immediately so in practice it's instant).
+    pub disk_health: Option<crate::disk::health::DiskHealth>,
 }
 
 impl Default for AppState {
@@ -69,6 +73,7 @@ impl Default for AppState {
             pending_show_created: Vec::new(),
             cpu_history: HashMap::new(),
             pending_self_update: false,
+            disk_health: None,
         }
     }
 }
@@ -185,6 +190,9 @@ impl AppState {
                         });
                     }
                 }
+            }
+            Event::DiskHealthRefreshed(h) => {
+                self.disk_health = Some(h);
             }
             Event::Tick => {
                 self.now = Instant::now();

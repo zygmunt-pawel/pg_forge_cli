@@ -29,6 +29,7 @@ pub enum Event {
         current_version: String,
     },
     SelfUpdateFailed { msg: String },
+    DiskHealthRefreshed(crate::disk::health::DiskHealth),
 }
 
 #[derive(Debug, Clone)]
