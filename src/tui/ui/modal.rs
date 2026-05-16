@@ -506,7 +506,7 @@ fn cycle_para(label: &str, value: &str, focused: bool) -> Paragraph<'static> {
     ])
 }
 
-fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
+pub(super) fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
     let w = w.min(area.width.saturating_sub(2));
     let h = h.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(w)) / 2;

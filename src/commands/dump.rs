@@ -113,7 +113,7 @@ impl Drop for PartialGuard {
 
 /// Default dump directory: `$HOME/pgforge-dumps/`. `~` is not shell-expanded
 /// by Rust — resolve `$HOME` explicitly.
-fn default_dump_dir() -> Result<PathBuf> {
+pub(crate) fn default_dump_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .ok_or_else(|| PgForgeError::Anyhow(anyhow::anyhow!("HOME not set")))?;
     Ok(PathBuf::from(home).join("pgforge-dumps"))
