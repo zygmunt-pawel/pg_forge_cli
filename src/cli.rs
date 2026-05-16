@@ -5,9 +5,9 @@ use clap::{Parser, Subcommand};
 
 #[derive(Subcommand, Debug)]
 pub enum ScheduleAction {
-    /// Install the launchd agent.
+    /// Install the systemd user timer.
     Install,
-    /// Remove the launchd agent.
+    /// Remove the systemd user timer.
     Uninstall,
     /// Show whether the agent plist exists + is currently loaded.
     Status,
@@ -32,8 +32,8 @@ pub enum Command {
         label: Option<String>,
         /// Iterate every backup-enabled instance and snapshot the ones
         /// whose configured `snapshot_hour` has passed today and which
-        /// haven't been snapshotted today yet. Intended for the LaunchAgent
-        /// installed by `pgforge schedule install`.
+        /// haven't been snapshotted today yet. Intended for the systemd user
+        /// timer installed by `pgforge schedule install`.
         #[arg(long, conflicts_with_all = ["name", "label"])]
         due: bool,
     },
@@ -107,7 +107,7 @@ pub enum Command {
         #[arg(long = "to")]
         to_version: u8,
     },
-    /// Manage the macOS LaunchAgent that runs `pgforge snapshot --due`
+    /// Manage the systemd user timer that runs `pgforge snapshot --due`
     /// every 5 minutes. Each instance opts in via its own
     /// `snapshot_hour` (set at Create time or with `pgforge cron`).
     Schedule {
@@ -437,7 +437,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             match action {
                 ScheduleAction::Install => {
                     let path = crate::commands::schedule::install()?;
-                    println!("Installed LaunchAgent at {}.", path.display());
+                    println!("Installed systemd user timer at {}.", path.display());
+                    println!("If this is a headless server, run once: sudo loginctl enable-linger $USER");
                     println!("Each instance fires according to its `snapshot_hour` field — `pgforge cron --name X --hour N` to change.");
                     Ok(())
                 }
