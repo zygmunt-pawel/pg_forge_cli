@@ -18,11 +18,11 @@ use base64::Engine;
 
 /// Build a postgres connection URI for an instance, using the real
 /// password from state.toml (mode 0600). Host is the machine's hostname
-/// (resolvable on the LAN via mDNS, e.g. `Pawels-Mac-mini.local`) so the
-/// URI is copy-paste-able from another machine. Falls back to
-/// 127.0.0.1 if hostname lookup fails — local-only connect still works
-/// in that case. The TUI never *prints* this URI to the screen; the
-/// bottom-bar flash says "copied" without echoing it.
+/// (resolvable on the LAN via DNS or /etc/hosts) so the URI is
+/// copy-paste-able from another machine. Falls back to 127.0.0.1 if
+/// hostname lookup fails — local-only connect still works in that case.
+/// The TUI never *prints* this URI to the screen; the bottom-bar flash
+/// says "copied" without echoing it.
 pub fn build_connection_uri(state: &InstanceState) -> String {
     let i = &state.instance;
     let host = lan_hostname().unwrap_or_else(|| "127.0.0.1".to_string());
@@ -33,24 +33,15 @@ pub fn build_connection_uri(state: &InstanceState) -> String {
     )
 }
 
-/// Best-effort `hostname` lookup for the LAN-reachable URI. On macOS
-/// the OS-level "Computer Name" appears as `<name>.local` via Bonjour
-/// (mDNS), so `gethostname()` ⇒ "Pawels-Mac-mini" is enough — we
-/// append `.local` for stability across LANs that don't broadcast a
-/// search domain. Linux servers return their actual hostname which
-/// either resolves via /etc/hosts or DNS — also fine.
+/// Best-effort `hostname` lookup for the LAN-reachable URI. Returns
+/// the hostname as-is — it either resolves via /etc/hosts or DNS.
 fn lan_hostname() -> Option<String> {
     let out = std::process::Command::new("hostname").output().ok()?;
     if !out.status.success() { return None; }
     let raw = String::from_utf8(out.stdout).ok()?;
     let h = raw.trim();
     if h.is_empty() { return None; }
-    // macOS hostnames sometimes come with `.local` already; don't double-append.
-    if cfg!(target_os = "macos") && !h.ends_with(".local") {
-        Some(format!("{h}.local"))
-    } else {
-        Some(h.to_string())
-    }
+    Some(h.to_string())
 }
 
 pub fn copy_to_clipboard(s: &str) -> Result<()> {
