@@ -33,7 +33,6 @@ use crate::docker::engine::{
 use crate::docker::image::{dockerfile, upgrade_dockerfile};
 use crate::docker::upgrade_entrypoint::generate_upgrade_entrypoint;
 use crate::domain::instance::Instance;
-use crate::domain::platform::current_platform;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::postgres::conf::generate_postgresql_conf_with_archive;
@@ -232,7 +231,6 @@ async fn recreate_regular_container<E: DockerEngine>(
     global: &GlobalConfig,
 ) -> Result<()> {
     let instance = &state.instance;
-    let plat = current_platform();
     let tuning = instance.preset.tuning();
     let container_name = format!("pgforge_{}", instance.name);
     let volume_name = instance.volume_name();
@@ -253,7 +251,7 @@ async fn recreate_regular_container<E: DockerEngine>(
     let with_archive = instance.backup_enabled;
     std::fs::write(
         &layout.postgresql_conf,
-        generate_postgresql_conf_with_archive(instance.preset, plat, with_archive),
+        generate_postgresql_conf_with_archive(instance.preset, with_archive),
     )
     .map_err(|e| PgForgeError::Io {
         path: layout.postgresql_conf.clone(),

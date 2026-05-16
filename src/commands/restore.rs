@@ -6,7 +6,6 @@ use crate::docker::engine::{
 use crate::docker::image::dockerfile;
 use crate::docker::restore_entrypoint::generate_restore_entrypoint;
 use crate::domain::instance::Instance;
-use crate::domain::platform::current_platform;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::ports::{TcpProbe, allocate_port};
@@ -68,7 +67,6 @@ pub async fn run_with_engine<E: DockerEngine>(
     s3: crate::pgbackrest::conf::S3Settings,
     source: InstanceState,
 ) -> Result<InstanceState> {
-    let plat = current_platform();
     let tuning = source.instance.preset.tuning();
 
     // 1. Allocate a port — avoid all known instances.
@@ -103,7 +101,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     // source's stanza and corrupt the source's backup chain.
     std::fs::write(
         &postgresql_conf,
-        generate_postgresql_conf_with_archive(source.instance.preset, plat, false),
+        generate_postgresql_conf_with_archive(source.instance.preset, false),
     )
     .map_err(|e| PgForgeError::Io {
         path: postgresql_conf.clone(),

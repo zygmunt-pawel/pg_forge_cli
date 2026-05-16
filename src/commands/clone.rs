@@ -8,7 +8,6 @@ use crate::docker::engine::{
 use crate::docker::image::dockerfile;
 use crate::docker::wait::wait_for_pg_ready;
 use crate::domain::instance::Instance;
-use crate::domain::platform::current_platform;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::pgbackrest::pgpass::generate_pgpass;
@@ -73,7 +72,6 @@ pub async fn run_with_engine<E: DockerEngine>(
         )));
     }
 
-    let plat = current_platform();
     let tuning = source.instance.preset.tuning();
 
     // Port allocation, skipping ports already taken.
@@ -105,7 +103,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     // pg_hba uses the SOURCE's db_name (cloned cluster keeps source's DB).
     std::fs::write(
         &postgresql_conf,
-        generate_postgresql_conf(source.instance.preset, plat),
+        generate_postgresql_conf(source.instance.preset),
     )
     .map_err(|e| PgForgeError::Io {
         path: postgresql_conf.clone(),

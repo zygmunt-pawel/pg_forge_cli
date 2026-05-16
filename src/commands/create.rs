@@ -5,7 +5,6 @@ use crate::docker::engine::{
 };
 use crate::docker::image::dockerfile;
 use crate::domain::instance::Instance;
-use crate::domain::platform::current_platform;
 use crate::domain::preset::Preset;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
@@ -114,7 +113,6 @@ pub async fn run_with_engine<E: DockerEngine>(
         return Err(PgForgeError::InstanceExists(args.name.clone()));
     }
 
-    let plat = current_platform();
     let tuning = args.preset.tuning();
 
     // 1. Allocate a port avoiding ones we've handed out before.
@@ -138,7 +136,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let with_archive = !args.no_backup;
     std::fs::write(
         &layout.postgresql_conf,
-        crate::postgres::conf::generate_postgresql_conf_with_archive(args.preset, plat, with_archive),
+        crate::postgres::conf::generate_postgresql_conf_with_archive(args.preset, with_archive),
     )
     .map_err(|e| PgForgeError::Io { path: layout.postgresql_conf.clone(), source: e })?;
     std::fs::write(&layout.pg_hba, generate_pg_hba(&args.name, &args.app_user))

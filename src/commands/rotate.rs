@@ -23,7 +23,6 @@ use crate::docker::engine::{
 };
 use crate::docker::image::dockerfile;
 use crate::domain::instance::Instance;
-use crate::domain::platform::current_platform;
 use crate::error::{PgForgeError, Result};
 use crate::pgbackrest::conf::generate_pgbackrest_conf;
 use crate::postgres::conf::generate_postgresql_conf_with_archive;
@@ -58,7 +57,6 @@ pub async fn run_with_engine<E: DockerEngine>(
     Instance::validate_name(&args.name)?;
     let state = InstanceState::load_under(&state_root, &args.name)?;
     let instance = &state.instance;
-    let plat = current_platform();
     let tuning = instance.preset.tuning();
 
     let container_name = format!("pgforge_{}", instance.name);
@@ -91,7 +89,7 @@ pub async fn run_with_engine<E: DockerEngine>(
     let with_archive = instance.backup_enabled;
     std::fs::write(
         &layout.postgresql_conf,
-        generate_postgresql_conf_with_archive(instance.preset, plat, with_archive),
+        generate_postgresql_conf_with_archive(instance.preset, with_archive),
     )
     .map_err(|e| PgForgeError::Io {
         path: layout.postgresql_conf.clone(),
