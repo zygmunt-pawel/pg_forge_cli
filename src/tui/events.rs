@@ -140,6 +140,10 @@ pub enum PendingDestructiveOp {
 
 #[derive(Debug, Clone)]
 pub enum Modal {
+    /// Centred menu of every per-instance action. Opened by `a` at the
+    /// top level. Each listed key delegates to an `open_*_for_selected`
+    /// method on AppState and closes itself first.
+    ActionsMenu { instance_name: String },
     CloneAs { source: String, input: TextField },
     UpgradeTo { source: String, input: TextField },
     RestoreAs {

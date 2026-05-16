@@ -8,7 +8,36 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
+    // ActionsMenu renders itself (variable-size block) — skip the shared
+    // centered_rect/Clear preamble and delegate directly.
+    if let Modal::ActionsMenu { instance_name } = modal {
+        let lines = [
+            Line::from(""),
+            Line::from("  [s] Snapshot"),
+            Line::from("  [c] Clone"),
+            Line::from("  [R] Rotate"),
+            Line::from("  [p] Preset (resize)"),
+            Line::from("  [t] snapshot Time"),
+            Line::from("  [r] Restore from"),
+            Line::from("  [d] Destroy"),
+            Line::from("  [u] Upgrade"),
+            Line::from("  [e] snapshots History"),
+            Line::from(""),
+            Line::from("  [esc] Cancel"),
+        ];
+        let area = centered_rect(32, lines.len() as u16 + 2, full);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Actions: {instance_name} "));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(lines.to_vec()), inner);
+        return;
+    }
+
     let (w, h) = match modal {
+        Modal::ActionsMenu { .. } => unreachable!(),
         Modal::CloneAs { .. } | Modal::UpgradeTo { .. } => (60, 9),
         Modal::RestoreAs { .. } => (78, 13),
         Modal::Confirm { .. } => (60, 7),
@@ -23,6 +52,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
     match modal {
+        Modal::ActionsMenu { .. } => unreachable!(),
         Modal::CloneAs { source, input } => single_input(f, area, &format!("Clone {source} as"), &input.buf, input.cursor),
         Modal::UpgradeTo { source, input } => single_input(f, area, &format!("Upgrade {source} — target version"), &input.buf, input.cursor),
         Modal::RestoreAs { source, as_input, minutes_ago, focus, pitr_earliest, uptime_cap_min } => {

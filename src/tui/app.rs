@@ -314,6 +314,14 @@ impl AppState {
         }
     }
 
+    pub(crate) fn open_upgrade_for_selected(&mut self) {
+        let Some(name) = self.selected_name().map(str::to_string) else { return; };
+        self.modal = Some(Modal::UpgradeTo {
+            source: name,
+            input: TextField::default(),
+        });
+    }
+
     pub(crate) fn open_destroy_with_delete_backups_for_selected(&mut self) {
         if let Some(n) = self.selected_name().map(str::to_string) {
             self.modal = Some(Modal::Confirm {
@@ -400,6 +408,11 @@ impl AppState {
                 }
             }
             KeyCode::Char('n') => { self.open_create_wizard(); }
+            KeyCode::Char('a') => {
+                if let Some(name) = self.selected_name().map(str::to_string) {
+                    self.modal = Some(Modal::ActionsMenu { instance_name: name });
+                }
+            }
             _ => {}
         }
     }
@@ -407,6 +420,28 @@ impl AppState {
     fn handle_modal_key(&mut self, k: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         if k.code == KeyCode::Esc { self.modal = None; return; }
+
+        // ActionsMenu: each key closes the menu first, then delegates.
+        if matches!(self.modal, Some(Modal::ActionsMenu { .. })) {
+            type OpenFn = fn(&mut AppState);
+            let pressed: Option<OpenFn> = match k.code {
+                KeyCode::Char('s') => Some(AppState::open_snapshot_for_selected),
+                KeyCode::Char('c') => Some(AppState::open_clone_for_selected),
+                KeyCode::Char('R') => Some(AppState::open_rotate_for_selected),
+                KeyCode::Char('p') => Some(AppState::open_preset_for_selected),
+                KeyCode::Char('t') => Some(AppState::open_time_for_selected),
+                KeyCode::Char('r') => Some(AppState::open_restore_for_selected),
+                KeyCode::Char('d') => Some(AppState::open_destroy_for_selected),
+                KeyCode::Char('u') => Some(AppState::open_upgrade_for_selected),
+                KeyCode::Char('e') => Some(AppState::open_snapshots_history_for_selected),
+                _                  => None,
+            };
+            if let Some(open) = pressed {
+                self.modal = None;
+                open(self);
+            }
+            return;
+        }
 
         // Decide what action to take, dropping the borrow before mutating elsewhere.
         enum Action { Nothing, Submit, ConfirmYes, ConfirmNo }
@@ -589,7 +624,8 @@ impl AppState {
                 KeyCode::Enter => Action::Submit,
                 _ => Action::Nothing,
             },
-            Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. }) | None => Action::Nothing,
+            Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. })
+            | Some(Modal::ActionsMenu { .. }) | None => Action::Nothing,
         };
         match action {
             Action::Nothing => {}
