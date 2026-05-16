@@ -252,6 +252,9 @@ impl AppState {
         }
     }
 
+    // Kept for potential future use; no longer wired at the TUI top level (T11).
+    // `pgforge self-update` CLI is the canonical entry point.
+    #[allow(dead_code)]
     pub(crate) fn trigger_self_update(&mut self) {
         // pg_upgrade (major-version pg) is rare enough that it
         // lives only in the CLI now. `[u]` in the TUI means
@@ -322,6 +325,8 @@ impl AppState {
         });
     }
 
+    // Kept for T12 which will fold this into the destroy-confirm modal's checkbox.
+    #[allow(dead_code)]
     pub(crate) fn open_destroy_with_delete_backups_for_selected(&mut self) {
         if let Some(n) = self.selected_name().map(str::to_string) {
             self.modal = Some(Modal::Confirm {
@@ -387,15 +392,14 @@ impl AppState {
             }
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => { self.last_op_error = None; }
-            KeyCode::Char('s') => { self.open_snapshot_for_selected(); }
-            KeyCode::Char('c') => { self.open_clone_for_selected(); }
-            KeyCode::Char('t') => { self.open_time_for_selected(); }
-            KeyCode::Char('p') => { self.open_preset_for_selected(); }
-            KeyCode::Char('u') => { self.trigger_self_update(); }
-            KeyCode::Char('r') => { self.open_restore_for_selected(); }
-            KeyCode::Char('R') => { self.open_rotate_for_selected(); }
-            KeyCode::Char('d') => { self.open_destroy_for_selected(); }
-            KeyCode::Char('D') => { self.open_destroy_with_delete_backups_for_selected(); }
+            KeyCode::Char('s'|'c'|'R'|'p'|'t'|'r'|'d'|'D'|'u'|'e') => {
+                self.flash = Some(Flash {
+                    msg: "Per-instance actions moved to [a]. Press 'a' to open."
+                        .to_string(),
+                    kind: FlashKind::Info,
+                    at: self.now,
+                });
+            }
             KeyCode::Char('?') => {
                 if let Some(e) = &self.last_op_error {
                     self.modal = Some(Modal::ErrorDetail { msg: e.msg.clone() });
@@ -403,7 +407,6 @@ impl AppState {
                     self.modal = Some(Modal::Help);
                 }
             }
-            KeyCode::Char('e') => { self.open_snapshots_history_for_selected(); }
             KeyCode::Enter => {
                 if let Some(n) = self.selected_name().map(str::to_string) {
                     self.pending_clipboard.push(n);
@@ -1193,25 +1196,6 @@ mod tests {
 
     // --- Task 3.1: Open modal on op keys ---
 
-    #[test]
-    fn key_c_opens_clone_as_modal_for_selected() {
-        let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
-        s.apply_event(key(KeyCode::Char('c')));
-        assert!(matches!(s.modal, Some(Modal::CloneAs { ref source, .. }) if source == "alpha"));
-    }
-
-    #[test]
-    fn key_u_triggers_self_update() {
-        // [u] in the TUI is `pgforge self-update` now (pg_upgrade moved
-        // to CLI). Setting the flag is enough; the main loop drains it
-        // into an async task — apply_event stays pure.
-        let mut s = AppState::default();
-        s.apply_event(key(KeyCode::Char('u')));
-        assert!(s.pending_self_update);
-        assert!(matches!(s.flash, Some(Flash { kind: FlashKind::Info, .. })));
-        assert!(s.modal.is_none(), "self-update doesn't open a modal");
-    }
 
     #[test]
     fn self_update_done_upgraded_sets_success_flash() {
@@ -1248,21 +1232,6 @@ mod tests {
         assert!(e.msg.contains("curl"));
     }
 
-    #[test]
-    fn key_r_opens_restore_as_modal() {
-        let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
-        s.apply_event(key(KeyCode::Char('r')));
-        assert!(matches!(s.modal, Some(Modal::RestoreAs { ref source, .. }) if source == "alpha"));
-    }
-
-    #[test]
-    fn key_shift_r_opens_confirm_rotate() {
-        let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
-        s.apply_event(Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT)));
-        assert!(matches!(s.modal, Some(Modal::Confirm { kind: PendingDestructiveOp::Rotate { ref name }, .. }) if name == "alpha"));
-    }
 
     #[test]
     fn key_question_opens_error_detail_when_error_present() {
@@ -1279,16 +1248,6 @@ mod tests {
         assert!(matches!(s.modal, Some(Modal::Help)));
     }
 
-    #[test]
-    fn key_e_opens_snapshots_modal_when_snapshots_loaded() {
-        let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
-        s.snapshots.insert("alpha".into(), SnapshotsView {
-            list: Vec::new(), pitr: Default::default(),
-        });
-        s.apply_event(key(KeyCode::Char('e')));
-        assert!(matches!(s.modal, Some(Modal::Snapshots { ref name, .. }) if name == "alpha"));
-    }
 
     #[test]
     fn op_keys_noop_when_no_instance_selected() {
@@ -1305,24 +1264,8 @@ mod tests {
     }
 
     // --- Task 3.2: [s] triggers Snapshot op event (no modal) ---
-
-    #[test]
-    fn key_s_enqueues_snapshot_op_for_selected() {
-        let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
-        s.apply_event(key(KeyCode::Char('s')));
-        assert_eq!(s.pending_ops, vec![("alpha".into(), OpKind::Snapshot)]);
-        assert!(s.modal.is_none(), "snapshot has no modal");
-    }
-
-    #[test]
-    fn key_s_noop_when_op_in_progress_on_same_instance() {
-        let mut s = AppState::default();
-        s.instances = vec![row("alpha")];
-        s.in_progress.insert("alpha".into(), RunningOp { kind: OpKind::Snapshot, started_at: Instant::now() });
-        s.apply_event(key(KeyCode::Char('s')));
-        assert!(s.pending_ops.is_empty(), "per-instance lock prevents enqueue");
-    }
+    // (Tests deleted in T11: s now flashes a hint instead of acting directly.
+    // New behaviour covered in tests/tui_flash_on_moved_key_test.rs.)
 
     // --- Task 3.3: Modal-on key dispatch + Esc closes modal ---
 
@@ -1562,29 +1505,4 @@ mod tests {
         assert_eq!(s.refresh_requests, vec!["alpha".to_string()]);
     }
 
-    fn state_with_two_instances() -> AppState {
-        let mut s = AppState::default();
-        s.apply_event(Event::InstancesListed(vec![row("a"), row("b")]));
-        s
-    }
-
-    #[test]
-    fn pressing_s_with_selection_opens_snapshot_modal_unchanged() {
-        let mut s = state_with_two_instances();
-        s.selected = 0;
-        s.apply_event(key(KeyCode::Char('s')));
-        // We won't assert on the modal type yet (will change in T11) — for now
-        // assert SOMETHING happened (modal opened OR op enqueued).
-        assert!(s.modal.is_some() || !s.pending_ops.is_empty(),
-            "expected s to trigger snapshot path; modal={:?} pending={:?}",
-            s.modal, s.pending_ops);
-    }
-
-    #[test]
-    fn pressing_d_with_selection_opens_destroy_modal_unchanged() {
-        let mut s = state_with_two_instances();
-        s.selected = 0;
-        s.apply_event(key(KeyCode::Char('d')));
-        assert!(matches!(s.modal, Some(Modal::Confirm { .. })));
-    }
 }
