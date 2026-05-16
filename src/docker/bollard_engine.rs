@@ -14,26 +14,8 @@ pub struct BollardEngine {
 impl BollardEngine {
     pub fn connect() -> Result<Self> {
         // bollard's connect_with_local_defaults reads DOCKER_HOST, then falls
-        // back to /var/run/docker.sock. On macOS with Colima the socket lives
-        // at ~/.colima/default/docker.sock, and `pgforge` invoked over SSH
-        // (e.g. `ssh -t host pgforge`) doesn't load .zprofile so DOCKER_HOST
-        // is unset. Probe Colima's well-known socket as a third fallback so
-        // headless Mac setups work out of the box.
-        if std::env::var_os("DOCKER_HOST").is_none()
-            && !std::path::Path::new("/var/run/docker.sock").exists()
-        {
-            if let Some(home) = std::env::var_os("HOME") {
-                let colima =
-                    std::path::PathBuf::from(home).join(".colima/default/docker.sock");
-                if colima.exists() {
-                    // SAFETY: BollardEngine::connect is the single entry point used
-                    // before any docker work; no other thread has read DOCKER_HOST yet.
-                    unsafe {
-                        std::env::set_var("DOCKER_HOST", format!("unix://{}", colima.display()));
-                    }
-                }
-            }
-        }
+        // back to /var/run/docker.sock. On a typical Linux install the user
+        // is in the `docker` group and the socket is reachable directly.
         let docker = Docker::connect_with_local_defaults()
             .map_err(|e| PgForgeError::Docker(format!("connect: {e}")))?;
         Ok(Self { docker })
