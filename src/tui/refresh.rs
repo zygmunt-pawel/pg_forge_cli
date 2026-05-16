@@ -101,9 +101,7 @@ fn spawn_snapshots(
             let docker = match BollardEngine::connect() { Ok(d) => d, Err(_) => continue };
             let root = state_root.clone().unwrap_or_else(InstanceState::default_state_root);
             for n in names {
-                let list = match snapshots::run(&n, Some(root.clone())) {
-                    Ok(l) => l, Err(_) => Vec::new(),
-                };
+                let list = snapshots::run(&n, Some(root.clone())).unwrap_or_default();
                 let pitr = match tokio::time::timeout(
                     Duration::from_secs(5),
                     snapshots::pitr_window(&n, &docker, &root),

@@ -87,10 +87,8 @@ pub async fn run_with_engine<E: DockerEngine>(
     let inspect = docker.inspect_container(&container).await?;
     out.running = inspect.running;
     out.restart_count = Some(inspect.restart_count);
-    if out.running {
-        if let Some(ref ts) = inspect.started_at {
-            out.uptime_seconds = parse_rfc3339_uptime_secs(ts);
-        }
+    if out.running && let Some(ref ts) = inspect.started_at {
+        out.uptime_seconds = parse_rfc3339_uptime_secs(ts);
     }
     if !out.running {
         return Ok(out);
@@ -166,10 +164,8 @@ pub async fn run_with_engine<E: DockerEngine>(
             &["du", "-sb", "/var/lib/postgresql/data/pgdata"],
         )
         .await?;
-    if du.exit_code == 0 {
-        if let Some(first_field) = du.stdout.split_whitespace().next() {
-            out.pgdata_bytes = first_field.parse().ok();
-        }
+    if du.exit_code == 0 && let Some(first_field) = du.stdout.split_whitespace().next() {
+        out.pgdata_bytes = first_field.parse().ok();
     }
 
     Ok(out)
@@ -265,10 +261,8 @@ pub fn render(status: &InstanceStatus) -> String {
     if let Some(up) = status.uptime_seconds {
         s.push_str(&format!("Uptime: {}\n", humanize_uptime(up)));
     }
-    if let Some(rc) = status.restart_count {
-        if rc > 0 {
-            s.push_str(&format!("Restarts: {rc} (container crashed and was auto-restarted)\n"));
-        }
+    if let Some(rc) = status.restart_count && rc > 0 {
+        s.push_str(&format!("Restarts: {rc} (container crashed and was auto-restarted)\n"));
     }
     if let Some(resp) = status.db_responsive {
         s.push_str(&format!(

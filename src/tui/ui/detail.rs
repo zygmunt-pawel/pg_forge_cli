@@ -67,11 +67,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         if let Some(up) = s.uptime_seconds {
             hb.push(Span::raw(format!("Uptime: {}", crate::commands::status::humanize_uptime(up))));
         }
-        if let Some(rc) = s.restart_count {
-            if rc > 0 {
-                if !hb.is_empty() { hb.push(Span::raw("   ")); }
-                hb.push(Span::styled(format!("Restarts: {rc}"), Style::default().fg(Color::Yellow)));
-            }
+        if let Some(rc) = s.restart_count && rc > 0 {
+            if !hb.is_empty() { hb.push(Span::raw("   ")); }
+            hb.push(Span::styled(format!("Restarts: {rc}"), Style::default().fg(Color::Yellow)));
         }
         if let Some(resp) = s.db_responsive {
             if !hb.is_empty() { hb.push(Span::raw("   ")); }

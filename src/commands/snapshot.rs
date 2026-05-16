@@ -51,11 +51,10 @@ pub async fn run_due(override_state_root: Option<PathBuf>) -> Result<usize> {
         }).await {
             tracing::error!(target: "pgforge::snapshot::due",
                 "due snapshot for {name} failed: {e}");
-            if let Ok(_lock) = crate::util::fs::LockedStateRoot::acquire(&state_root) {
-                if let Ok(mut s) = crate::state::instance::InstanceState::load_under(&state_root, &name) {
-                    s.instance.last_snapshot_attempt_at = Some(crate::time::now_iso());
-                    let _ = s.save_under(&state_root);
-                }
+            if let Ok(_lock) = crate::util::fs::LockedStateRoot::acquire(&state_root)
+                && let Ok(mut s) = crate::state::instance::InstanceState::load_under(&state_root, &name) {
+                s.instance.last_snapshot_attempt_at = Some(crate::time::now_iso());
+                let _ = s.save_under(&state_root);
             }
             continue;
         }
@@ -94,14 +93,13 @@ pub fn is_snapshot_due(
             return false;
         }
     }
-    if let Some(att) = last_attempt {
-        if let Ok(ts) = jiff::Timestamp::from_str(att) {
-            let age = (jiff::Timestamp::now().as_second() - ts.as_second()).max(0);
-            if age < 3600 {
-                tracing::info!(target: "pgforge::snapshot::due",
-                    "recent failed attempt {att:?} ({age}s ago); backing off");
-                return false;
-            }
+    if let Some(att) = last_attempt
+        && let Ok(ts) = jiff::Timestamp::from_str(att) {
+        let age = (jiff::Timestamp::now().as_second() - ts.as_second()).max(0);
+        if age < 3600 {
+            tracing::info!(target: "pgforge::snapshot::due",
+                "recent failed attempt {att:?} ({age}s ago); backing off");
+            return false;
         }
     }
     true

@@ -93,10 +93,8 @@ pub async fn wait_for_recovery_end<E: DockerEngine>(
                 "-c", "select pg_is_in_recovery()",
             ])
             .await;
-        if let Ok(o) = out {
-            if o.exit_code == 0 && o.stdout.trim() == "f" {
-                return Ok(());
-            }
+        if let Ok(o) = out && o.exit_code == 0 && o.stdout.trim() == "f" {
+            return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(PgForgeError::Docker(format!(

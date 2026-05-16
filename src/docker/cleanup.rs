@@ -27,13 +27,11 @@ pub async fn cleanup_partial<E: DockerEngine>(
     }
     // Conf dir holds .pgpass + init_sql with role password + pgbackrest.conf
     // with S3 keys. Failing to remove it leaks credentials.
-    if conf_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(conf_dir) {
-            tracing::warn!(
-                target: "pgforge::cleanup",
-                "cleanup: remove_dir_all({}) failed: {e} — credentials may remain on disk",
-                conf_dir.display()
-            );
-        }
+    if conf_dir.exists() && let Err(e) = std::fs::remove_dir_all(conf_dir) {
+        tracing::warn!(
+            target: "pgforge::cleanup",
+            "cleanup: remove_dir_all({}) failed: {e} — credentials may remain on disk",
+            conf_dir.display()
+        );
     }
 }

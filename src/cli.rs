@@ -248,7 +248,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             if !had_snaps {
                 println!("No snapshots for {name}.");
             } else {
-                println!("{:<24}  {:<6}  {:<22}  {}", "label", "kind", "taken_at", "user_label");
+                println!("{:<24}  {:<6}  {:<22}  user_label", "label", "kind", "taken_at");
                 for s in &snaps {
                     println!(
                         "{:<24}  {:<6?}  {:<22}  {}",

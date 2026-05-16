@@ -9,48 +9,40 @@ permissions:
   contents: write
 
 jobs:
-  build-macos-universal:
-    name: Build macOS universal binary
-    runs-on: macos-14
+  build-linux-x86_64:
+    name: Build Linux x86_64 binary
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust + both Apple targets
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build aarch64 (Apple Silicon)
-        run: cargo build --release --target aarch64-apple-darwin
+      - name: Build (release)
+        run: cargo build --release --target x86_64-unknown-linux-gnu
 
-      - name: Build x86_64 (Intel)
-        run: cargo build --release --target x86_64-apple-darwin
-
-      - name: Lipo universal binary
+      - name: Strip + smoke test + checksum + tarball
         run: |
           mkdir -p dist
-          lipo -create \
-            target/aarch64-apple-darwin/release/pgforge \
-            target/x86_64-apple-darwin/release/pgforge \
-            -output dist/pgforge
-          file dist/pgforge
-          chmod +x dist/pgforge
-
-      - name: Strip + checksum + tarball
-        run: |
-          strip dist/pgforge
-          (cd dist && tar -czf pgforge-macos-universal.tar.gz pgforge && shasum -a 256 pgforge pgforge-macos-universal.tar.gz > SHA256SUMS)
+          cp target/x86_64-unknown-linux-gnu/release/pgforge dist/pgforge-linux-x86_64
+          strip dist/pgforge-linux-x86_64
+          ./dist/pgforge-linux-x86_64 --version    # catches broken linkage
+          (cd dist && \
+             tar -czf pgforge-linux-x86_64.tar.gz pgforge-linux-x86_64 && \
+             sha256sum pgforge-linux-x86_64 pgforge-linux-x86_64.tar.gz > SHA256SUMS)
           ls -lah dist/
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/pgforge
-            dist/pgforge-macos-universal.tar.gz
+            dist/pgforge-linux-x86_64
+            dist/pgforge-linux-x86_64.tar.gz
             dist/SHA256SUMS
           generate_release_notes: true
           draft: false

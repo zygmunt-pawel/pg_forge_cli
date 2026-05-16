@@ -102,7 +102,7 @@ fn atomic_write_leaves_no_tmp_on_success() {
     let leftovers: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name() != std::ffi::OsString::from("a.toml"))
+        .filter(|e| e.file_name() != "a.toml")
         .collect();
     assert!(leftovers.is_empty(), "found: {:?}", leftovers);
 }

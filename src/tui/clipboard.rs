@@ -47,6 +47,7 @@ fn lan_hostname() -> Option<String> {
 pub fn copy_to_clipboard(s: &str) -> Result<()> {
     let remote = std::env::var_os("SSH_CONNECTION").is_some()
         || std::env::var_os("SSH_TTY").is_some();
+    #[allow(clippy::type_complexity)] // reason: fixed-size array of fn ptrs; a type alias would obscure the intent
     let strategies: [fn(&str) -> std::result::Result<(), String>; 2] = if remote {
         [copy_via_osc52, copy_via_arboard]
     } else {

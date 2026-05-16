@@ -141,10 +141,10 @@ fn build_post_create_uri(instance_name: &str) -> Result<String> {
 fn spawn_key_reader(tx: mpsc::UnboundedSender<Event>) {
     tokio::task::spawn_blocking(move || {
         loop {
-            if crossterm::event::poll(Duration::from_millis(500)).unwrap_or(false) {
-                if let Ok(crossterm::event::Event::Key(k)) = crossterm::event::read() {
-                    if tx.send(Event::Key(k)).is_err() { return; }
-                }
+            if crossterm::event::poll(Duration::from_millis(500)).unwrap_or(false)
+                && let Ok(crossterm::event::Event::Key(k)) = crossterm::event::read()
+                && tx.send(Event::Key(k)).is_err() {
+                return;
             }
         }
     });

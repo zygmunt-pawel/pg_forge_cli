@@ -91,11 +91,10 @@ impl AppState {
                 let prev_name = self.selected_name().map(str::to_string);
                 self.instances = rows;
                 // Re-anchor selection by name if possible, else clamp.
-                if let Some(n) = prev_name {
-                    if let Some(i) = self.instances.iter().position(|r| r.name == n) {
-                        self.selected = i;
-                        return;
-                    }
+                if let Some(n) = prev_name
+                    && let Some(i) = self.instances.iter().position(|r| r.name == n) {
+                    self.selected = i;
+                    return;
                 }
                 if self.instances.is_empty() {
                     self.selected = 0;
@@ -189,10 +188,9 @@ impl AppState {
             }
             Event::Tick => {
                 self.now = Instant::now();
-                if let Some(f) = &self.flash {
-                    if self.now.duration_since(f.at) > std::time::Duration::from_secs(3) {
-                        self.flash = None;
-                    }
+                if let Some(f) = &self.flash
+                    && self.now.duration_since(f.at) > std::time::Duration::from_secs(3) {
+                    self.flash = None;
                 }
                 // last_op_error is sticky — user clears with Esc.
             }
@@ -218,10 +216,9 @@ impl AppState {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => { self.last_op_error = None; }
             KeyCode::Char('s') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    if !self.in_progress.contains_key(&n) {
-                        self.pending_ops.push((n, OpKind::Snapshot));
-                    }
+                if let Some(n) = self.selected_name().map(str::to_string)
+                    && !self.in_progress.contains_key(&n) {
+                    self.pending_ops.push((n, OpKind::Snapshot));
                 }
             }
             KeyCode::Char('c') => {
@@ -335,10 +332,9 @@ impl AppState {
                 }
             }
             KeyCode::Char('e') => {
-                if let Some(n) = self.selected_name().map(str::to_string) {
-                    if let Some(v) = self.snapshots.get(&n).cloned() {
-                        self.modal = Some(Modal::Snapshots { name: n, view: v });
-                    }
+                if let Some(n) = self.selected_name().map(str::to_string)
+                    && let Some(v) = self.snapshots.get(&n).cloned() {
+                    self.modal = Some(Modal::Snapshots { name: n, view: v });
                 }
             }
             KeyCode::Enter => {
@@ -432,13 +428,12 @@ impl AppState {
                 // wipe-S3-backups variant in-place. Documented in the
                 // initial prompt. Other destructive kinds ignore it.
                 KeyCode::Char('D') => {
-                    if let PendingDestructiveOp::Destroy { name, delete_backups } = kind {
-                        if !*delete_backups {
-                            *delete_backups = true;
-                            *prompt = format!(
-                                "Destroy {name} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
-                            );
-                        }
+                    if let PendingDestructiveOp::Destroy { name, delete_backups } = kind
+                        && !*delete_backups {
+                        *delete_backups = true;
+                        *prompt = format!(
+                            "Destroy {name} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
+                        );
                     }
                     Action::Nothing
                 }
@@ -877,6 +872,7 @@ fn validate_instance_name(s: &str) -> std::result::Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // reason: test helpers use mutation for readability
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

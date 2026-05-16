@@ -134,7 +134,7 @@ pub async fn run_with_engine<E: DockerEngine>(
 mod tests {
     use super::*;
     use crate::docker::engine::{
-        BindMount, BuildImageSpec, CreateContainerSpec, ExecOutput, NamedVolume,
+        BuildImageSpec, CreateContainerSpec, ExecOutput,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;

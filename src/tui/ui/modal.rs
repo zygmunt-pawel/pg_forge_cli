@@ -234,9 +234,9 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             // the byte-cursor (correct for ASCII; close enough for
             // multi-byte names which aren't expected here).
             if let Some(field) = match *focus {
-                0 => Some(&*name),
-                1 => Some(&*app_user),
-                2 => Some(&*pg_version),
+                0 => Some(name),
+                1 => Some(app_user),
+                2 => Some(pg_version),
                 _ => None,
             } {
                 let chunk = chunks[*focus as usize];
