@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod disk;
 pub mod docker;
 pub mod domain;
 pub mod error;
