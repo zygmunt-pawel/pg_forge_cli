@@ -116,7 +116,7 @@ pub async fn run_with_engine<E: DockerEngine>(
         source: e,
     })?;
     // pgbackrest.conf carries S3 access_key + secret_key.
-    crate::util::fs::write_secret(
+    crate::util::fs::write_bind_mount_config(
         &pgbackrest_conf,
         generate_pgbackrest_conf(&args.source, &s3, source.instance.retain_days),
     )?;

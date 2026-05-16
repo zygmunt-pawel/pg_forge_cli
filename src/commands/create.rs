@@ -142,15 +142,19 @@ pub async fn run_with_engine<E: DockerEngine>(
     std::fs::write(&layout.pg_hba, generate_pg_hba(&args.name, &args.app_user))
         .map_err(|e| PgForgeError::Io { path: layout.pg_hba.clone(), source: e })?;
     if let Some(s3) = s3.as_ref() {
-        // pgbackrest.conf carries S3 access_key + secret_key.
-        crate::util::fs::write_secret(
+        // pgbackrest.conf carries S3 access_key + secret_key. Bind-mounted into
+        // the container at /etc/pgbackrest/pgbackrest.conf — mode 0644 so the
+        // in-container postgres user (UID 999) can read it; parent dir is 0700
+        // so the host stays locked down.
+        crate::util::fs::write_bind_mount_config(
             &layout.pgbackrest_conf,
             generate_pgbackrest_conf(&args.name, s3, args.retain_days),
         )?;
         let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
         crate::util::fs::create_secret_dir(&init_dir)?;
-        // init_sql carries CREATE ROLE … PASSWORD '…' in plaintext.
-        crate::util::fs::write_secret(
+        // init_sql carries CREATE ROLE … PASSWORD '…' in plaintext. Bind-mounted
+        // into /docker-entrypoint-initdb.d — must be container-readable.
+        crate::util::fs::write_bind_mount_config(
             &layout.init_sql,
             generate_init_sql(&args.pgbackrest_password),
         )?;

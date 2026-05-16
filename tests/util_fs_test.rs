@@ -1,4 +1,4 @@
-use pgforge::util::fs::{atomic_write, create_secret_dir, fsync_dir, write_secret};
+use pgforge::util::fs::{atomic_write, create_secret_dir, fsync_dir, write_bind_mount_config, write_secret};
 use pgforge::util::fs::LockedStateRoot;
 
 #[test]
@@ -54,6 +54,50 @@ fn create_secret_dir_is_idempotent() {
     create_secret_dir(&path).unwrap();
     // Calling again on an existing dir should succeed.
     create_secret_dir(&path).unwrap();
+}
+
+#[test]
+fn write_bind_mount_config_sets_mode_0644_on_unix() {
+    // Bind-mounted configs (pgbackrest.conf, init_sql) must be readable by the
+    // container's postgres user (UID 999 in the official image), which differs
+    // from the host user (typically UID 1000). 0600 — even if functionally
+    // safer — breaks pgbackrest stanza-create with [13] Permission denied on
+    // native Linux Docker. Parent dir stays 0700, so host secrecy holds.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("pgbackrest.conf");
+    write_bind_mount_config(&path, "[global]\nrepo1-s3-key=AKIA...\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[global]\nrepo1-s3-key=AKIA...\n"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "expected 0644, got {mode:o}");
+    }
+}
+
+#[test]
+fn write_bind_mount_config_resets_mode_on_overwrite() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("conf");
+    std::fs::write(&path, "old").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&path, perms).unwrap();
+    }
+    write_bind_mount_config(&path, "new").unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "must reset mode to 0644 on overwrite, got {mode:o}");
+    }
 }
 
 #[test]

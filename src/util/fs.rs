@@ -75,6 +75,28 @@ pub fn write_secret(path: &Path, content: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
+/// Write a config file that will be bind-mounted into a Postgres container.
+/// Sets mode 0644 so the in-container postgres user (UID 999 in the official
+/// image) can read it — host UID is typically 1000, so 0600 would deny it
+/// with [13] Permission denied. Host-side secrecy is preserved by the parent
+/// directory's 0700 mode (see `create_secret_dir`): no other host user can
+/// traverse in. Use for pgbackrest.conf, init_sql, postgresql.conf, pg_hba.conf —
+/// anything that crosses the bind-mount boundary. Use `write_secret` (0600)
+/// for files that never leave the host, like state.toml.
+pub fn write_bind_mount_config(path: &Path, content: impl AsRef<[u8]>) -> Result<()> {
+    atomic_write(path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(path, perms).map_err(|e| PgForgeError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    }
+    Ok(())
+}
+
 /// Create a directory that will hold secret files. Sets mode 0700 so other
 /// local users cannot list/traverse the contents. Idempotent — succeeds if
 /// the directory already exists.

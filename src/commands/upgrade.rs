@@ -266,13 +266,13 @@ async fn recreate_regular_container<E: DockerEngine>(
         source: e,
     })?;
     if let Some(s3) = s3.as_ref() {
-        crate::util::fs::write_secret(
+        crate::util::fs::write_bind_mount_config(
             &layout.pgbackrest_conf,
             generate_pgbackrest_conf(&instance.name, s3, instance.retain_days),
         )?;
         let init_dir = layout.init_sql.parent().unwrap().to_path_buf();
         crate::util::fs::create_secret_dir(&init_dir)?;
-        crate::util::fs::write_secret(
+        crate::util::fs::write_bind_mount_config(
             &layout.init_sql,
             generate_init_sql(&instance.pgbackrest_password),
         )?;
