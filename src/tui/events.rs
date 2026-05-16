@@ -212,6 +212,9 @@ pub enum Modal {
     /// means "manual only". Numeric cycler: ← → ±1, digits jump, Backspace
     /// resets to None.
     ScheduleEdit { name: String, current: Option<u8>, new: Option<u8> },
+    /// First step of destroy: tick "delete backups too" before confirming.
+    /// Space toggles, Enter advances to Confirm, Esc cancels.
+    DestroyOptions { name: String, delete_backups: bool },
 }
 
 /// Map a PgForgeError (or anyhow) into the string carried by

@@ -80,6 +80,7 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
         Modal::ConnectionString { .. } => (90, 9),
         Modal::ResizeTo { .. } => (66, 11),
         Modal::ScheduleEdit { .. } => (66, 10),
+        Modal::DestroyOptions { .. } => (54, 8),
     };
     let area = centered_rect(w, h, full);
     f.render_widget(Clear, area);
@@ -473,6 +474,23 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
                 ]),
                 chunks[3],
             );
+        }
+        Modal::DestroyOptions { name, delete_backups } => {
+            let mark = if *delete_backups { "[x]" } else { "[ ]" };
+            let lines = vec![
+                Line::from(""),
+                Line::from(format!("  Destroy: {name}")),
+                Line::from(""),
+                Line::from(format!("  {mark} Also delete S3 backups (unrecoverable)")),
+                Line::from(""),
+                Line::from("  [space] toggle  [enter] proceed  [esc] cancel"),
+            ];
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Destroy options ");
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            f.render_widget(Paragraph::new(lines), inner);
         }
         Modal::ConnectionString { name, uri } => {
             let block = Block::default()

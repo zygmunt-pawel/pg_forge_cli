@@ -102,12 +102,12 @@ fn question_mark_with_error_opens_error_detail_modal() {
 }
 
 #[test]
-fn d_in_actions_menu_opens_destroy_confirm() {
+fn d_in_actions_menu_opens_destroy_options() {
     let mut s = AppState::default();
     s.apply_event(Event::InstancesListed(vec![row("billing")]));
     s.modal = Some(Modal::ActionsMenu { instance_name: "billing".into() });
     s.apply_event(k('d'));
-    // ActionsMenu should have closed, then destroy modal opened
-    assert!(matches!(s.modal, Some(Modal::Confirm { .. })),
-        "expected Confirm; got {:?}", s.modal);
+    // ActionsMenu should have closed, then DestroyOptions modal opened
+    assert!(matches!(s.modal, Some(Modal::DestroyOptions { delete_backups: false, .. })),
+        "expected DestroyOptions; got {:?}", s.modal);
 }

@@ -306,15 +306,9 @@ impl AppState {
         }
     }
 
-    pub(crate) fn open_destroy_for_selected(&mut self) {
-        if let Some(n) = self.selected_name().map(str::to_string) {
-            self.modal = Some(Modal::Confirm {
-                kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: false },
-                prompt: format!(
-                    "Destroy {n}? This drops the container AND its data volume. S3 backups are RETAINED — restore later with `pgforge restore`. Press [D] (shift) to also wipe S3 backups."
-                ),
-            });
-        }
+    pub fn open_destroy_for_selected(&mut self) {
+        let Some(name) = self.selected_name().map(str::to_string) else { return; };
+        self.modal = Some(Modal::DestroyOptions { name, delete_backups: false });
     }
 
     pub(crate) fn open_upgrade_for_selected(&mut self) {
@@ -323,19 +317,6 @@ impl AppState {
             source: name,
             input: TextField::default(),
         });
-    }
-
-    // Kept for T12 which will fold this into the destroy-confirm modal's checkbox.
-    #[allow(dead_code)]
-    pub(crate) fn open_destroy_with_delete_backups_for_selected(&mut self) {
-        if let Some(n) = self.selected_name().map(str::to_string) {
-            self.modal = Some(Modal::Confirm {
-                kind: PendingDestructiveOp::Destroy { name: n.clone(), delete_backups: true },
-                prompt: format!(
-                    "Destroy {n} + DELETE ALL S3 BACKUPS? This is permanent: container, volume, full backups, WAL archives, PITR window — all gone. No recovery."
-                ),
-            });
-        }
     }
 
     pub(crate) fn open_snapshots_history_for_selected(&mut self) {
@@ -444,6 +425,36 @@ impl AppState {
             if let Some(open) = pressed {
                 self.modal = None;
                 open(self);
+            }
+            return;
+        }
+
+        // DestroyOptions: space toggles checkbox, Enter advances to Confirm, Esc cancels.
+        if matches!(self.modal, Some(Modal::DestroyOptions { .. })) {
+            if let Some(Modal::DestroyOptions { name, delete_backups }) = self.modal.take() {
+                match k.code {
+                    KeyCode::Char(' ') => {
+                        self.modal = Some(Modal::DestroyOptions {
+                            name, delete_backups: !delete_backups
+                        });
+                    }
+                    KeyCode::Enter => {
+                        let prompt = if delete_backups {
+                            format!("Destroy '{name}' AND delete ALL its S3 backups? (y/N)")
+                        } else {
+                            format!("Destroy '{name}'? (y/N)")
+                        };
+                        self.modal = Some(Modal::Confirm {
+                            kind: PendingDestructiveOp::Destroy { name, delete_backups },
+                            prompt,
+                        });
+                    }
+                    KeyCode::Esc => { self.modal = None; }
+                    _ => {
+                        // Restore modal unchanged.
+                        self.modal = Some(Modal::DestroyOptions { name, delete_backups });
+                    }
+                }
             }
             return;
         }
@@ -630,7 +641,7 @@ impl AppState {
                 _ => Action::Nothing,
             },
             Some(Modal::Snapshots { .. }) | Some(Modal::ErrorDetail { .. })
-            | Some(Modal::ActionsMenu { .. }) | None => Action::Nothing,
+            | Some(Modal::ActionsMenu { .. }) | Some(Modal::DestroyOptions { .. }) | None => Action::Nothing,
             Some(Modal::Help) => {
                 if matches!(k.code, KeyCode::Char('?')) {
                     self.modal = None;
