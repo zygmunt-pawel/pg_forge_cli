@@ -1,277 +1,243 @@
-//! `pgforge schedule {install,uninstall,status}` — manage the macOS
-//! launchd agent that fires `pgforge snapshot --due` periodically.
+//! `pgforge schedule {install,uninstall,status}` — manage the systemd user
+//! timer that fires `pgforge snapshot --due` every 5 minutes.
 //!
-//! Why a global "every 5 minutes" agent instead of N per-instance
-//! agents at exact times: macOS launchd is fine with both, but the
-//! per-instance variant means re-running launchctl bootstrap every
-//! time the user changes a snapshot_hour. The tick agent is simpler —
-//! it always runs, `snapshot --due` reads state.toml on each tick and
-//! decides what (if anything) is overdue. The trade-off is that a
-//! snapshot scheduled for 03:00 fires at 03:00-03:04 wall-clock; for
-//! a daily backup this is invisible.
+//! User units live under `~/.config/systemd/user/`. `systemctl --user`
+//! manages them without root. For the typical headless-server case, the
+//! operator must run `sudo loginctl enable-linger $USER` once so the timer
+//! fires when no user session is active — this is checked at `install` time
+//! and surfaced as a loud stderr warning if missing.
 
 use crate::error::{PgForgeError, Result};
 use std::path::PathBuf;
-
-// ---------------------------------------------------------------------------
-// launchctl soft-failure classification helpers
-// ---------------------------------------------------------------------------
-
-/// Returns true when `stderr` from `launchctl bootstrap` signals a headless-
-/// domain failure — the plist is still on disk and launchd will load it at the
-/// next user login, so the caller should downgrade to a warning rather than an
-/// error.
-///
-/// Case-insensitive substring match to tolerate macOS-version wording changes.
-pub fn launchctl_is_soft_install_failure(stderr: &str) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    lower.contains("input/output error")
-        || lower.contains("could not find domain")
-        || lower.contains("domain target")
-        || lower.contains("bootstrap failed: 5")
-        || lower.contains("bootstrap failed: 112")
-        || lower.contains("bootstrap failed: 113")
-}
-
-/// Returns true when `stderr` from `launchctl bootout` signals the service
-/// was already absent — treat as idempotent success and continue to plist
-/// removal.
-pub fn launchctl_is_already_gone(stderr: &str) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    lower.contains("could not find specified service")
-        || lower.contains("no such process")
-        || lower.contains("service is disabled and cannot be loaded")
-        || lower.contains("esrch")
-}
-
-// ---------------------------------------------------------------------------
-// Private helper — runs launchctl and captures stdout+stderr
-// ---------------------------------------------------------------------------
-
-fn run_launchctl(args: &[&str]) -> Result<std::process::Output> {
-    std::process::Command::new("launchctl")
-        .args(args)
-        .output()
-        .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("launchctl {:?}: {e}", args)))
-}
+use std::process::Output;
 
 pub const AGENT_LABEL: &str = "dev.pgforge.snapshot-due";
-const TICK_SECONDS: u32 = 300; // 5 min
 
+/// Status snapshot returned by `pgforge schedule status`.
 #[derive(Debug, Clone)]
 pub struct ScheduleStatus {
-    /// True iff `~/Library/LaunchAgents/<label>.plist` exists.
-    pub plist_present: bool,
-    /// True iff `launchctl list` reports the label as loaded. Only
-    /// meaningful when a GUI session exists (`launchctl print
-    /// gui/<uid>` reachable). On headless boxes the plist gets picked
-    /// up at next user login.
-    pub loaded: bool,
-    pub plist_path: PathBuf,
+    /// Path of the `.timer` file.
+    pub unit_path: PathBuf,
+    /// True iff both unit files exist on disk.
+    pub unit_present: bool,
+    /// `systemctl --user is-enabled` reports `enabled`.
+    pub enabled: bool,
+    /// `systemctl --user is-active` reports `active`.
+    pub active: bool,
+    /// Next firing time as systemd reports it (`NextElapseUSecRealtime`),
+    /// formatted as a human string. `None` when systemd reports unknown
+    /// or parsing fails.
+    pub next_run: Option<String>,
+    /// `loginctl show-user $USER -p Linger` reports `Linger=yes`.
+    pub linger_enabled: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Pure generators — unit-tested
+// ---------------------------------------------------------------------------
+
+/// Render the `.service` unit. `exe` must be an absolute path to the pgforge
+/// binary (the systemd-spawned process won't inherit `$PATH`-shell lookups).
+pub fn render_service(exe: &str) -> String {
+    format!(
+        "[Unit]\n\
+         Description=pgforge: snapshot every backup-enabled instance whose hour is due\n\
+         \n\
+         [Service]\n\
+         Type=oneshot\n\
+         ExecStart={exe} snapshot --due\n\
+         Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
+    )
+}
+
+/// Render the `.timer` unit. Fires 2 minutes after boot, then every 5 minutes.
+///
+/// Note on `OnUnitActiveSec`: the next firing is 5 min after the timer last
+/// *activated*, not after the previous run *finished*. For a `snapshot --due`
+/// tick that normally completes in seconds this is irrelevant; for a slow S3
+/// push the next activation can overlap. Acceptable for a daily-snapshot
+/// trigger; documented here so it isn't read later as a bug.
+pub fn render_timer() -> String {
+    format!(
+        "[Unit]\n\
+         Description=Run pgforge snapshot --due every 5 minutes\n\
+         \n\
+         [Timer]\n\
+         OnBootSec=2min\n\
+         OnUnitActiveSec=5min\n\
+         Unit={AGENT_LABEL}.service\n\
+         \n\
+         [Install]\n\
+         WantedBy=timers.target\n",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem layout
+// ---------------------------------------------------------------------------
+
+fn unit_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| PgForgeError::Anyhow(anyhow::anyhow!("HOME not set")))?;
+    Ok(PathBuf::from(home).join(".config/systemd/user"))
+}
+
+fn service_path() -> Result<PathBuf> {
+    Ok(unit_dir()?.join(format!("{AGENT_LABEL}.service")))
+}
+
+fn timer_path() -> Result<PathBuf> {
+    Ok(unit_dir()?.join(format!("{AGENT_LABEL}.timer")))
+}
+
+// ---------------------------------------------------------------------------
+// Shell-out helpers
+// ---------------------------------------------------------------------------
+
+fn run_systemctl(args: &[&str]) -> Result<Output> {
+    std::process::Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()
+        .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("systemctl --user {:?}: {e}", args)))
+}
+
+fn run_loginctl(args: &[&str]) -> Result<Output> {
+    std::process::Command::new("loginctl")
+        .args(args)
+        .output()
+        .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("loginctl {:?}: {e}", args)))
+}
+
+/// True iff `loginctl show-user $USER -p Linger` reports `Linger=yes`.
+fn linger_enabled() -> bool {
+    let user = match std::env::var("USER") {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    let Ok(out) = run_loginctl(&["show-user", &user, "-p", "Linger"]) else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim() == "Linger=yes")
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Install the user timer. Returns the path of the `.timer` file.
 pub fn install() -> Result<PathBuf> {
     let exe = std::env::current_exe()
         .map_err(|e| PgForgeError::Anyhow(anyhow::anyhow!("current_exe: {e}")))?;
-    let log_dir = log_dir()?;
-    std::fs::create_dir_all(&log_dir).map_err(|e| PgForgeError::Io {
-        path: log_dir.clone(),
+    let exe_str = exe.to_string_lossy().into_owned();
+
+    let dir = unit_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| PgForgeError::Io {
+        path: dir.clone(),
         source: e,
     })?;
-    let log_path = log_dir.join("schedule.log");
-    let plist = render_plist(&exe.to_string_lossy(), &log_path.to_string_lossy());
-    let plist_path = plist_path()?;
-    if let Some(parent) = plist_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| PgForgeError::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
-    }
-    std::fs::write(&plist_path, plist).map_err(|e| PgForgeError::Io {
-        path: plist_path.clone(),
+
+    let svc_path = service_path()?;
+    let tmr_path = timer_path()?;
+    std::fs::write(&svc_path, render_service(&exe_str)).map_err(|e| PgForgeError::Io {
+        path: svc_path.clone(),
         source: e,
     })?;
-    // Try to load it now. On headless macOS this can fail with
-    // "Input/output error" / "Could not find domain" / "Bootstrap failed: 5"
-    // because gui/<uid> is unreachable without a GUI session. The plist is
-    // still on disk and launchd will pick it up at the next user login.
-    let domain = format!("gui/{}", uid_or_501());
-    let plist_str = plist_path.to_string_lossy();
-    // Idempotent reinstall: bootout any prior agent of the same label so
-    // bootstrap doesn't fail with "service already loaded". Best effort.
-    let _ = run_launchctl(&["bootout", &domain, &plist_str]);
-    let out = run_launchctl(&["bootstrap", &domain, &plist_str])?;
-    if out.status.success() {
-        return Ok(plist_path);
+    std::fs::write(&tmr_path, render_timer()).map_err(|e| PgForgeError::Io {
+        path: tmr_path.clone(),
+        source: e,
+    })?;
+
+    let reload = run_systemctl(&["daemon-reload"])?;
+    if !reload.status.success() {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "systemctl --user daemon-reload returned {}: {}",
+            reload.status,
+            String::from_utf8_lossy(&reload.stderr).trim()
+        )));
     }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if launchctl_is_soft_install_failure(&stderr) {
-        tracing::warn!(
-            "launchctl bootstrap returned non-zero on a headless domain — \
-             the plist is on disk at {} and will load at next user login. \
-             stderr: {}",
-            plist_path.display(),
-            stderr.trim()
+    let enable = run_systemctl(&["enable", "--now", &format!("{AGENT_LABEL}.timer")])?;
+    if !enable.status.success() {
+        return Err(PgForgeError::Anyhow(anyhow::anyhow!(
+            "systemctl --user enable --now returned {}: {}",
+            enable.status,
+            String::from_utf8_lossy(&enable.stderr).trim()
+        )));
+    }
+
+    if !linger_enabled() {
+        eprintln!(
+            "WARNING: linger is not enabled for $USER — the timer will only fire \
+             while you are logged in. Run `sudo loginctl enable-linger $USER` to \
+             have it fire on a headless server."
         );
-        return Ok(plist_path);
     }
-    Err(PgForgeError::Anyhow(anyhow::anyhow!(
-        "launchctl bootstrap returned {}: {}",
-        out.status,
-        stderr.trim()
-    )))
+
+    Ok(tmr_path)
 }
 
 pub fn uninstall() -> Result<()> {
-    let path = plist_path()?;
-    let domain = format!("gui/{}", uid_or_501());
-    let path_str = path.to_string_lossy();
-    let out = run_launchctl(&["bootout", &domain, &path_str])?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if launchctl_is_already_gone(&stderr) {
-            // Service was never loaded or already removed — still delete the
-            // plist so the install state is clean.
-            tracing::debug!(
-                "launchctl bootout: service not found (idempotent). stderr: {}",
-                stderr.trim()
-            );
-        } else {
-            return Err(PgForgeError::Anyhow(anyhow::anyhow!(
-                "launchctl bootout returned {}: {}",
-                out.status,
-                stderr.trim()
-            )));
+    // Best-effort disable; tolerate "not loaded" / "doesn't exist".
+    let _ = run_systemctl(&["disable", "--now", &format!("{AGENT_LABEL}.timer")]);
+
+    let svc = service_path()?;
+    let tmr = timer_path()?;
+    for p in [&tmr, &svc] {
+        if p.exists() {
+            std::fs::remove_file(p).map_err(|e| PgForgeError::Io {
+                path: p.clone(),
+                source: e,
+            })?;
         }
     }
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| PgForgeError::Io {
-            path: path.clone(),
-            source: e,
-        })?;
-    }
+
+    let _ = run_systemctl(&["daemon-reload"]);
     Ok(())
 }
 
 pub fn status() -> Result<ScheduleStatus> {
-    let path = plist_path()?;
-    let loaded = std::process::Command::new("launchctl")
-        .args(["print"])
-        .arg(format!("gui/{}/{}", uid_or_501(), AGENT_LABEL))
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    Ok(ScheduleStatus {
-        plist_present: path.exists(),
-        loaded,
-        plist_path: path,
-    })
-}
+    let svc = service_path()?;
+    let tmr = timer_path()?;
+    let unit_present = svc.exists() && tmr.exists();
+    let timer_unit = format!("{AGENT_LABEL}.timer");
 
-fn plist_path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        PgForgeError::Anyhow(anyhow::anyhow!("HOME not set"))
-    })?;
-    Ok(PathBuf::from(home)
-        .join("Library/LaunchAgents")
-        .join(format!("{AGENT_LABEL}.plist")))
-}
-
-fn log_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        PgForgeError::Anyhow(anyhow::anyhow!("HOME not set"))
-    })?;
-    Ok(PathBuf::from(home).join("Library/Logs/pgforge"))
-}
-
-fn uid_or_501() -> u32 {
-    #[cfg(unix)]
-    unsafe { libc_getuid() }
-    #[cfg(not(unix))]
-    501
-}
-
-#[cfg(unix)]
-unsafe fn libc_getuid() -> u32 {
-    // libc isn't a direct dep yet; spawn `id -u` once to avoid pulling
-    // it in just for this. Cheap (~1 ms) and only called by install /
-    // uninstall / status.
-    std::process::Command::new("id")
-        .arg("-u")
-        .output()
+    let is_enabled = run_systemctl(&["is-enabled", &timer_unit])
         .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(501)
-}
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+        .unwrap_or(false);
+    let is_active = run_systemctl(&["is-active", &timer_unit])
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+        .unwrap_or(false);
 
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\'' => out.push_str("&apos;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
+    let next_run = run_systemctl(&[
+        "show",
+        &timer_unit,
+        "-p",
+        "NextElapseUSecRealtime",
+        "--value",
+    ])
+    .ok()
+    .and_then(|o| {
+        if o.status.success() {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() || s == "n/a" { None } else { Some(s) }
+        } else {
+            None
         }
-    }
-    out
-}
+    });
 
-pub fn render_plist(exe: &str, log_path: &str) -> String {
-    let exe_esc = xml_escape(exe);
-    let log_esc = xml_escape(log_path);
-    let label_esc = xml_escape(AGENT_LABEL);
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exe}</string>
-        <string>snapshot</string>
-        <string>--due</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>{tick}</integer>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{log}</string>
-    <key>StandardErrorPath</key>
-    <string>{log}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    </dict>
-</dict>
-</plist>
-"#,
-        label = label_esc,
-        exe = exe_esc,
-        tick = TICK_SECONDS,
-        log = log_esc,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plist_contains_label_and_program() {
-        let p = render_plist("/usr/local/bin/pgforge", "/var/log/pgforge.log");
-        assert!(p.contains("dev.pgforge.snapshot-due"));
-        assert!(p.contains("<string>/usr/local/bin/pgforge</string>"));
-        assert!(p.contains("<string>snapshot</string>"));
-        assert!(p.contains("<string>--due</string>"));
-        // StartInterval 5 minutes
-        assert!(p.contains("<integer>300</integer>"));
-    }
+    Ok(ScheduleStatus {
+        unit_path: tmr,
+        unit_present,
+        enabled: is_enabled,
+        active: is_active,
+        next_run,
+        linger_enabled: linger_enabled(),
+    })
 }

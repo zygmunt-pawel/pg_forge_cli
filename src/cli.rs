@@ -449,9 +449,23 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 }
                 ScheduleAction::Status => {
                     let s = crate::commands::schedule::status()?;
-                    println!("plist:  {}", s.plist_path.display());
-                    println!("on disk: {}", s.plist_present);
-                    println!("loaded:  {}", s.loaded);
+                    let state = match (s.enabled, s.active) {
+                        (true, true) => "enabled, active",
+                        (true, false) => "enabled, inactive",
+                        (false, true) => "disabled but active",
+                        (false, false) => "disabled, inactive",
+                    };
+                    println!("Unit:    {} ({state})", s.unit_path.display());
+                    println!("On disk: {}", s.unit_present);
+                    match s.next_run {
+                        Some(n) => println!("Next:    {n}"),
+                        None    => println!("Next:    unknown"),
+                    }
+                    println!(
+                        "Linger:  {}",
+                        if s.linger_enabled { "enabled" } else { "disabled (run `sudo loginctl enable-linger $USER` for headless)" }
+                    );
+                    println!("Logs:    journalctl --user -u {}", crate::commands::schedule::AGENT_LABEL);
                     Ok(())
                 }
             }
