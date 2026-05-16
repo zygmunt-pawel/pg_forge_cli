@@ -3,7 +3,8 @@
 //! is distinct from Ok and means "we could not measure", surfaced as `Disk ?`
 //! in the TUI, no banner in the CLI.
 
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskStatus {
@@ -114,4 +115,76 @@ impl DiskHealth {
             worst_mount: w.mount_path.clone(),
         }
     }
+}
+
+/// Best-effort statvfs of `path`, walking up to the first existing ancestor
+/// (so a not-yet-created `~/pgforge-dumps` falls back to `$HOME`). Returns
+/// Err on any failure; callers drop the mount silently.
+pub fn measure_path(label: &str, path: &Path) -> Result<MountUsage, std::io::Error> {
+    let existing = walk_up_to_existing(path)?;
+    let stat = nix::sys::statvfs::statvfs(&existing)
+        .map_err(|e| std::io::Error::other(format!("statvfs: {e}")))?;
+    let frsize = stat.fragment_size() as u64;
+    let total_bytes = stat.blocks() as u64 * frsize;
+    let free_bytes = stat.blocks_available() as u64 * frsize;
+    let used_pct = MountUsage::compute_pct(total_bytes, free_bytes);
+    Ok(MountUsage {
+        mount_label: label.to_string(),
+        mount_path: existing,
+        used_pct,
+        free_bytes,
+        total_bytes,
+    })
+}
+
+fn walk_up_to_existing(start: &Path) -> Result<PathBuf, std::io::Error> {
+    let mut p: &Path = start;
+    loop {
+        if p.exists() {
+            return Ok(p.to_path_buf());
+        }
+        match p.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => p = parent,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("no ancestor of {start:?} exists"),
+                ))
+            }
+        }
+    }
+}
+
+/// Measure each labelled path and drop duplicates by device id
+/// (st_dev). The first labelled occurrence wins.
+pub fn measure_dedup(paths: Vec<(&str, PathBuf)>) -> Vec<MountUsage> {
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut out: Vec<MountUsage> = Vec::new();
+    for (label, p) in paths {
+        match measure_path(label, &p) {
+            Ok(m) => {
+                let dev = match m.mount_path.metadata() {
+                    Ok(md) => md.dev(),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "pgforge::disk",
+                            "metadata({path:?}) failed: {e}; dropping mount",
+                            path = m.mount_path
+                        );
+                        continue;
+                    }
+                };
+                if seen.insert(dev) {
+                    out.push(m);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "pgforge::disk",
+                    "measure {label} {p:?} failed: {e}; dropping mount"
+                );
+            }
+        }
+    }
+    out
 }

@@ -67,3 +67,47 @@ fn sample(pct: u8, label: &str) -> MountUsage {
         total_bytes: 100,
     }
 }
+
+use std::path::Path;
+
+#[test]
+fn measure_path_returns_a_mount_for_an_existing_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = pgforge::disk::health::measure_path("tmp", tmp.path()).unwrap();
+    assert_eq!(m.mount_label, "tmp");
+    assert!(m.total_bytes > 0, "tempdir filesystem should report nonzero size");
+    assert!(m.used_pct <= 100);
+}
+
+#[test]
+fn measure_path_walks_up_to_existing_ancestor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("does-not-exist").join("deeper");
+    // Should NOT error; should statvfs the nearest existing ancestor (tmp).
+    let m = pgforge::disk::health::measure_path("dumps", &missing).unwrap();
+    assert!(m.total_bytes > 0);
+}
+
+#[test]
+fn measure_path_returns_err_when_no_ancestor_exists() {
+    // /no/such/path/anywhere/ever — root exists but nothing past it.
+    let p = Path::new("/no/such/path/anywhere/ever");
+    let r = pgforge::disk::health::measure_path("x", p);
+    // Walks up to "/" which exists, so this should succeed.
+    assert!(r.is_ok(), "should walk up to /");
+}
+
+#[test]
+fn dedupe_collapses_same_dev() {
+    // /tmp and a subdirectory of /tmp are on the same filesystem;
+    // measuring both should produce one deduped entry.
+    let tmp = tempfile::tempdir().unwrap();
+    let subdir = tmp.path().join("a");
+    std::fs::create_dir(&subdir).unwrap();
+    let paths = vec![
+        ("docker", tmp.path().to_path_buf()),
+        ("dumps", subdir),
+    ];
+    let mounts = pgforge::disk::health::measure_dedup(paths);
+    assert_eq!(mounts.len(), 1, "same filesystem should dedupe; got {mounts:?}");
+}
