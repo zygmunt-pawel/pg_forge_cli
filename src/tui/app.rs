@@ -399,6 +399,8 @@ impl AppState {
             KeyCode::Char('?') => {
                 if let Some(e) = &self.last_op_error {
                     self.modal = Some(Modal::ErrorDetail { msg: e.msg.clone() });
+                } else {
+                    self.modal = Some(Modal::Help);
                 }
             }
             KeyCode::Char('e') => { self.open_snapshots_history_for_selected(); }
@@ -1271,10 +1273,10 @@ mod tests {
     }
 
     #[test]
-    fn key_question_without_error_is_noop() {
+    fn key_question_without_error_opens_help() {
         let mut s = AppState::default();
         s.apply_event(key(KeyCode::Char('?')));
-        assert!(s.modal.is_none());
+        assert!(matches!(s.modal, Some(Modal::Help)));
     }
 
     #[test]

@@ -74,6 +74,33 @@ fn help_modal_lists_global_and_per_instance_keys() {
     }
 }
 
+use pgforge::tui::events::OpError;
+use std::time::Instant;
+
+#[test]
+fn question_mark_without_error_opens_help_modal() {
+    let mut s = AppState::default();
+    s.apply_event(k('?'));
+    assert!(matches!(s.modal, Some(Modal::Help)),
+        "expected Help; got {:?}", s.modal);
+}
+
+#[test]
+fn question_mark_with_error_opens_error_detail_modal() {
+    let mut s = AppState {
+        last_op_error: Some(OpError {
+            instance: "x".into(),
+            kind: pgforge::tui::events::OpKind::Snapshot,
+            msg: "boom".into(),
+            at: Instant::now(),
+        }),
+        ..AppState::default()
+    };
+    s.apply_event(k('?'));
+    assert!(matches!(s.modal, Some(Modal::ErrorDetail { .. })),
+        "expected ErrorDetail; got {:?}", s.modal);
+}
+
 #[test]
 fn d_in_actions_menu_opens_destroy_confirm() {
     let mut s = AppState::default();
