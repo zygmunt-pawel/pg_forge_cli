@@ -12,16 +12,45 @@ const SPINNER: &[char] = &['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧'];
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-    let [content_area, version_area] = Layout::horizontal([
+    let disk = format_disk_zone(state.disk_health.as_ref());
+    let [content_area, disk_area, version_area] = Layout::horizontal([
         Constraint::Min(0),
+        Constraint::Length(disk.label.chars().count() as u16),
         Constraint::Length(version.chars().count() as u16),
     ])
     .areas(area);
     render_content(f, content_area, state);
     f.render_widget(
+        Paragraph::new(disk.label).style(disk.style),
+        disk_area,
+    );
+    f.render_widget(
         Paragraph::new(version).style(Style::default().add_modifier(Modifier::DIM)),
         version_area,
     );
+}
+
+struct DiskZone { label: String, style: Style }
+
+fn format_disk_zone(h: Option<&crate::disk::health::DiskHealth>) -> DiskZone {
+    use crate::disk::health::DiskStatus;
+    let Some(h) = h else {
+        return DiskZone {
+            label: " Disk ? ".to_string(),
+            style: Style::default().add_modifier(Modifier::DIM),
+        };
+    };
+    let (label, style) = match h.status {
+        DiskStatus::Unknown  => (" Disk ? ".to_string(),
+                                 Style::default().add_modifier(Modifier::DIM)),
+        DiskStatus::Ok       => (format!(" Disk {}% ", h.worst_pct),
+                                 Style::default().add_modifier(Modifier::DIM)),
+        DiskStatus::Warn     => (format!(" Disk {}% ", h.worst_pct),
+                                 Style::default().fg(Color::Yellow)),
+        DiskStatus::Critical => (format!(" Disk {}% ", h.worst_pct),
+                                 Style::default().fg(Color::Red)),
+    };
+    DiskZone { label, style }
 }
 
 fn render_content(f: &mut Frame, area: Rect, state: &AppState) {
@@ -60,7 +89,7 @@ fn render_content(f: &mut Frame, area: Rect, state: &AppState) {
     }
     f.render_widget(
         Paragraph::new(
-            "[n]ew [s]nap [c]lone [R]otate [p]reset [t]ime [r]estore [d]estroy [u]pdate [↵] uri [q]uit"
+            "[n]ew [a]ctions [?]help [↵] uri [q]uit"
         ),
         area,
     );
