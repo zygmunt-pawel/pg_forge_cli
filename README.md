@@ -374,3 +374,31 @@ PGFORGE_E2E=1 cargo test          # also runs the gated end-to-end tests
 ```
 
 Design specs and implementation plans live under `docs/superpowers/`.
+
+### Cross-compiling for a Linux server from a Mac dev box
+
+pgforge is Linux-only at runtime but most contributors hack on macOS. The
+project builds for x86_64 Linux servers via [`cross`](https://github.com/cross-rs/cross),
+which runs the linker inside a Docker container so you don't need a local
+Linux toolchain.
+
+```bash
+# One-time: install cross (uses Docker under the hood; Docker Desktop or
+# Colima must be running).
+cargo install cross --locked
+
+# Build a release binary targeting Linux x86_64 (the common server arch).
+# For ARM Linux servers (rare) use aarch64-unknown-linux-gnu instead.
+cross build --release --target x86_64-unknown-linux-gnu
+
+# Deploy to the server. ~/.local/bin/pgforge is the conventional path
+# (matches `pgforge schedule install` and `pgforge smart install`, both
+# of which bake this path into the systemd-user service ExecStart).
+scp target/x86_64-unknown-linux-gnu/release/pgforge db-server:.local/bin/pgforge
+ssh db-server "pgforge --version"   # verify the deploy
+```
+
+If you have an existing `pgforge schedule install` or `pgforge smart install`
+on the server, the timers and sudoers fragment keep working across a binary
+swap — no need to re-install them. Only re-run install commands when adding
+a new disk (SMART) or changing snapshot cron schedules.
