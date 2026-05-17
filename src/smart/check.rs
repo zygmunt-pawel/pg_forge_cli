@@ -84,9 +84,78 @@ pub async fn discover_disks() -> Vec<DiscoveredDisk> {
     parse_lsblk_json(&stdout)
 }
 
-// Silence unused-import lint until later tasks use the reason enum.
-#[allow(dead_code)]
-fn _touch_reason_enum() -> SmartUnknownReason { SmartUnknownReason::NoDevicesFound }
+/// Whether to run sudo non-interactively (`-n`, used by the timer where we
+/// can't prompt) or interactively (used by `pgforge smart check` from a
+/// TTY without --write-cache, where the user is sitting at the keyboard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SudoMode {
+    NonInteractive,
+    Interactive,
+}
+
+/// Spawn sudo + smartctl on one device, return stdout bytes on success or
+/// a classified `SmartUnknownReason` on failure. 5-second per-call timeout.
+pub async fn run_smartctl(
+    smartctl_path: &std::path::Path,
+    device: &std::path::Path,
+    mode: SudoMode,
+) -> Result<Vec<u8>, SmartUnknownReason> {
+    let mut cmd = tokio::process::Command::new("sudo");
+    if mode == SudoMode::NonInteractive {
+        cmd.arg("-n");
+    }
+    cmd.arg(smartctl_path)
+        .args(["-H", "-A", "-j"])
+        .arg(device);
+
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        cmd.output(),
+    ).await {
+        Ok(Ok(o))  => o,
+        Ok(Err(e)) => {
+            tracing::warn!(target: "pgforge::smart",
+                "spawn sudo smartctl {device:?}: {e}");
+            return Err(SmartUnknownReason::NotInstalled);
+        }
+        Err(_) => {
+            tracing::warn!(target: "pgforge::smart",
+                "smartctl {device:?} timed out after 5s");
+            return Err(SmartUnknownReason::ParseError);
+        }
+    };
+
+    // Non-zero exit code may still produce valid JSON (smartctl uses its
+    // exit code as a bitfield; OVERALL_HEALTH=FAILED returns nonzero but
+    // emits JSON). Trust stdout if it parses; only fall back to stderr
+    // classification when stdout is empty.
+    if !output.stdout.is_empty() {
+        return Ok(output.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(classify_smartctl_failure(&stderr))
+}
+
+/// Map a smartctl / sudo stderr blob to the most specific
+/// `SmartUnknownReason`. Order matters — match the more specific patterns
+/// first.
+pub fn classify_smartctl_failure(stderr: &str) -> SmartUnknownReason {
+    if stderr.contains("a password is required") {
+        return SmartUnknownReason::NoSudoers;
+    }
+    if stderr.contains("command not found") {
+        return SmartUnknownReason::NotInstalled;
+    }
+    if stderr.contains("No such file or directory") {
+        return SmartUnknownReason::DeviceMissing;
+    }
+    if stderr.contains("Unknown USB bridge")
+        || stderr.contains("does not support SMART")
+    {
+        return SmartUnknownReason::DeviceNotSupported;
+    }
+    SmartUnknownReason::ParseError
+}
 
 #[cfg(test)]
 mod tests {
@@ -135,5 +204,59 @@ mod tests {
         let disks = parse_lsblk_json(json);
         assert_eq!(disks.len(), 1);
         assert_eq!(disks[0].path, std::path::PathBuf::from("/dev/sdb"));
+    }
+
+    #[test]
+    fn classify_smartctl_stderr_no_such_file() {
+        let stderr = "Smartctl open device: /dev/sda failed: No such file or directory";
+        assert_eq!(
+            classify_smartctl_failure(stderr),
+            SmartUnknownReason::DeviceMissing,
+        );
+    }
+
+    #[test]
+    fn classify_smartctl_stderr_not_supported() {
+        let stderr = "Device does not support SMART";
+        assert_eq!(
+            classify_smartctl_failure(stderr),
+            SmartUnknownReason::DeviceNotSupported,
+        );
+    }
+
+    #[test]
+    fn classify_smartctl_stderr_unknown_usb_bridge() {
+        let stderr = "Smartctl open device: /dev/sdc failed: Unknown USB bridge";
+        assert_eq!(
+            classify_smartctl_failure(stderr),
+            SmartUnknownReason::DeviceNotSupported,
+        );
+    }
+
+    #[test]
+    fn classify_sudo_password_required() {
+        let stderr = "sudo: a password is required";
+        assert_eq!(
+            classify_smartctl_failure(stderr),
+            SmartUnknownReason::NoSudoers,
+        );
+    }
+
+    #[test]
+    fn classify_command_not_found() {
+        let stderr = "sudo: smartctl: command not found";
+        assert_eq!(
+            classify_smartctl_failure(stderr),
+            SmartUnknownReason::NotInstalled,
+        );
+    }
+
+    #[test]
+    fn classify_anything_else_is_parse_error() {
+        let stderr = "weird unexpected message";
+        assert_eq!(
+            classify_smartctl_failure(stderr),
+            SmartUnknownReason::ParseError,
+        );
     }
 }
