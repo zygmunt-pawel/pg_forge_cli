@@ -43,11 +43,11 @@ fn format_disk_zone(h: Option<&crate::disk::health::DiskHealth>) -> DiskZone {
     let (label, style) = match h.status {
         DiskStatus::Unknown  => (" Disk ? ".to_string(),
                                  Style::default().add_modifier(Modifier::DIM)),
-        DiskStatus::Ok       => (format!(" Disk {}% ", h.worst_pct),
+        DiskStatus::Ok       => (format!(" Disk {}% used ", h.worst_pct),
                                  Style::default().add_modifier(Modifier::DIM)),
-        DiskStatus::Warn     => (format!(" Disk {}% ", h.worst_pct),
+        DiskStatus::Warn     => (format!(" Disk {}% used ", h.worst_pct),
                                  Style::default().fg(Color::Yellow)),
-        DiskStatus::Critical => (format!(" Disk {}% ", h.worst_pct),
+        DiskStatus::Critical => (format!(" Disk {}% used ", h.worst_pct),
                                  Style::default().fg(Color::Red)),
     };
     DiskZone { label, style }

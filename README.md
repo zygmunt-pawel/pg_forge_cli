@@ -189,7 +189,7 @@ schedule install` will print a loud warning if linger isn't enabled.
 - `q` — quit
 
 Disk usage of the host (worst across Docker volume, pgforge state, and
-pgforge dumps filesystems) is shown in the bottom bar as `Disk N%` —
+pgforge dumps filesystems) is shown in the bottom bar as `Disk N% used` —
 yellow at ≥ 80%, red at ≥ 90%. `Disk ?` means pgforge could not
 measure (e.g. Docker daemon unreachable).
 

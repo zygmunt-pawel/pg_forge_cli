@@ -19,7 +19,7 @@ fn footer_shows_disk_pct_when_known() {
         let area = ratatui::layout::Rect { x: 0, y: 0, width: 80, height: 1 };
         bottom::render(f, area, &state);
     });
-    assert!(buffer_contains(&buf, "Disk 42%"), "footer = {:?}",
+    assert!(buffer_contains(&buf, "Disk 42% used"), "footer = {:?}",
         tui_render_helpers::buffer_to_string(&buf));
 }
 
