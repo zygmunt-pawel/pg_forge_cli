@@ -99,12 +99,39 @@ impl AppState {
                 if let Some(n) = prev_name
                     && let Some(i) = self.instances.iter().position(|r| r.name == n) {
                     self.selected = i;
-                    return;
-                }
-                if self.instances.is_empty() {
+                } else if self.instances.is_empty() {
                     self.selected = 0;
                 } else if self.selected >= self.instances.len() {
                     self.selected = self.instances.len() - 1;
+                }
+                // Close any modal bound to an instance no longer in the list.
+                // Prevents pressing keys against vanished state.
+                let names: std::collections::HashSet<&str> = self.instances
+                    .iter().map(|i| i.name.as_str()).collect();
+                let bound_name: Option<String> = match &self.modal {
+                    Some(Modal::ActionsMenu { instance_name }) => Some(instance_name.clone()),
+                    Some(Modal::DestroyOptions { name, .. })   => Some(name.clone()),
+                    Some(Modal::CloneAs { source, .. })        => Some(source.clone()),
+                    Some(Modal::UpgradeTo { source, .. })      => Some(source.clone()),
+                    Some(Modal::RestoreAs { source, .. })      => Some(source.clone()),
+                    Some(Modal::ResizeTo { name, .. })         => Some(name.clone()),
+                    Some(Modal::ScheduleEdit { name, .. })     => Some(name.clone()),
+                    Some(Modal::Snapshots { name, .. })        => Some(name.clone()),
+                    Some(Modal::ConnectionString { name, .. }) => Some(name.clone()),
+                    Some(Modal::CreatedSuccess { name, .. })   => Some(name.clone()),
+                    Some(Modal::Confirm { kind, .. }) => match kind {
+                        PendingDestructiveOp::Rotate { name }            => Some(name.clone()),
+                        PendingDestructiveOp::Upgrade { name, .. }       => Some(name.clone()),
+                        PendingDestructiveOp::Restore { source, .. }     => Some(source.clone()),
+                        PendingDestructiveOp::Destroy { name, .. }       => Some(name.clone()),
+                        PendingDestructiveOp::Resize { name, .. }        => Some(name.clone()),
+                    },
+                    _ => None,
+                };
+                if let Some(n) = bound_name
+                    && !names.contains(n.as_str())
+                {
+                    self.modal = None;
                 }
             }
             Event::StatusRefreshed { name, status } => {
@@ -1514,6 +1541,27 @@ mod tests {
         s.in_progress.insert("alpha".into(), RunningOp { kind: OpKind::Snapshot, started_at: Instant::now() });
         s.apply_event(Event::OpFinished { instance: "alpha".into(), kind: OpKind::Snapshot, result: Ok(()) });
         assert_eq!(s.refresh_requests, vec!["alpha".to_string()]);
+    }
+
+    // --- Task 13: Close instance-bound modal when instance vanishes mid-modal ---
+
+    #[test]
+    fn actions_menu_closes_when_instance_vanishes() {
+        let mut s = AppState::default();
+        s.apply_event(Event::InstancesListed(vec![row("a"), row("b")]));
+        s.modal = Some(Modal::ActionsMenu { instance_name: "a".into() });
+        // Instance "a" disappears.
+        s.apply_event(Event::InstancesListed(vec![row("b")]));
+        assert!(s.modal.is_none(), "expected ActionsMenu closed; got {:?}", s.modal);
+    }
+
+    #[test]
+    fn destroy_options_closes_when_instance_vanishes() {
+        let mut s = AppState::default();
+        s.apply_event(Event::InstancesListed(vec![row("a")]));
+        s.modal = Some(Modal::DestroyOptions { name: "a".into(), delete_backups: false });
+        s.apply_event(Event::InstancesListed(vec![]));
+        assert!(s.modal.is_none());
     }
 
 }
