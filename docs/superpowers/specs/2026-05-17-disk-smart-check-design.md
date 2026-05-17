@@ -59,8 +59,9 @@ These came out of brainstorming with the user on 2026-05-17 and are not re-litig
 | `src/smart/mod.rs` | new | `pub mod {types, check, cache, install};` + file-level `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]` mirroring `src/disk/mod.rs` |
 | `src/smart/types.rs` | new | `SmartStatus`, `SmartUnknownReason`, `DriveSmart`, `SmartHealth`; serde derives; aggregate helper |
 | `src/smart/check.rs` | new | `discover_disks()` (lsblk JSON wrap), `run_smartctl(device)` (subprocess wrap), `parse_smartctl_json(json, transport)` (per-transport dispatch); `check_all()` that wires the three together |
-| `src/smart/cache.rs` | new | `default_cache_path()`, `read_cache(path, now, max_age) -> SmartHealth`, `write_cache(path, &health)` |
-| `src/smart/install.rs` | new | `install_all(opts)` (writes sudoers via `sudo tee`, validates via `visudo -c -f`, writes timer units, daemon-reload+enable+start, runs first check), `uninstall_all()` (reverse), `render_sudoers_fragment(user, devices)`, `render_timer_unit()`, `render_service_unit()`, `postinstall_summary(&SmartHealth)` |
+| `src/smart/cache.rs` | new | `default_cache_path()`, `read_cache(path, now, max_age) -> SmartHealth`, `write_cache(path, &health)`, `STALE_AFTER_HOURS` constant |
+| `src/smart/installed.rs` | new | `InstalledState { smartctl_path: PathBuf, user: String, devices: Vec<PathBuf>, installed_at: jiff::Timestamp }`; `default_installed_path()` → `$XDG_STATE_HOME/pgforge/smart-installed.json`; `read_installed() -> Option<InstalledState>`, `write_installed(&InstalledState)` |
+| `src/smart/install.rs` | new | `install_all(opts)` (writes sudoers via tempfile→`visudo -c -f`→`sudo install -m 0440`, writes timer units, daemon-reload+enable+start, writes `InstalledState`, runs first check), `uninstall_all()` (reverse), `render_sudoers_fragment(user, smartctl_path, devices) -> Result<String, InstallError>`, `render_timer_unit()`, `render_service_unit(smartctl_path)`, `postinstall_summary(&SmartHealth)` |
 | `src/commands/smart.rs` | new | dispatch for `pgforge smart {install, check, status, uninstall}`; argument parsing; human-readable output |
 | `src/cli.rs` | modify | add `Command::Smart { #[command(subcommand)] action: SmartAction }`; extend `dispatch` to read SMART cache + print Critical banner ABOVE capacity banner (same gating); extend `should_emit_banner_for_command` impact (SmartCheck etc. excluded from banner same as Ls) |
 | `src/tui/events.rs` | modify | new `Event::SmartRefreshed(SmartHealth)` |
@@ -119,9 +120,11 @@ impl SmartStatus {
 pub enum SmartUnknownReason {
     NotInstalled,        // smartmontools missing on host
     NoSudoers,           // sudoers fragment not present or sudo -n failed
+    NoInstalledState,    // smart-installed.json missing (pgforge smart install never ran)
     NoDevicesFound,      // lsblk returned zero matching disks
     DeviceNotSupported,  // smartctl said the device doesn't support SMART
-    Stale,               // cache file checked_at older than max_age
+    DeviceMissing,       // smartctl could not open the device (ENOENT — hot-unplugged?)
+    Stale,               // cache file checked_at older than max_age (or in the future)
     NoCache,             // cache file does not exist (timer never ran)
     ParseError,          // smartctl JSON or cache JSON failed to parse
 }
@@ -148,16 +151,52 @@ pub struct SmartHealth {
 
 impl SmartHealth {
     pub fn unknown(reason: SmartUnknownReason) -> Self { /* ... */ }
-    pub fn aggregate(drives: Vec<DriveSmart>, now: jiff::Timestamp) -> Self {
-        // Empty drives -> Unknown(NoDevicesFound).
-        // Otherwise pick worst by rank; ties broken by first occurrence.
-        // If all drives are Unknown, take the first drive's unknown_reason.
+
+    /// Worst-of aggregate across drives.
+    ///
+    /// Empty drives → Unknown(NoDevicesFound).
+    /// Otherwise pick the worst by `SmartStatus::rank`; ties broken by first
+    /// occurrence (input order from `discover_disks`, which is lsblk's order).
+    ///
+    /// Aggregate semantics (chosen, NOT to be quietly changed): the rank
+    /// table places `Unknown < Ok`, so a mix of one Ok drive and ten Unknown
+    /// drives reports overall = Ok. Rationale: a real measurement should
+    /// always win over "we don't know." The reasons vector of the worst drive
+    /// surfaces in TUI/banner; the full `drives` vector is preserved so
+    /// `pgforge smart status` can show every Unknown drive separately. We do
+    /// NOT escalate to Warn just because most drives are Unknown — that would
+    /// turn a working SATA disk plus an unsupported virtio disk into a
+    /// constant Warn, which is the same desensitization problem Warn-in-banner
+    /// would cause.
+    pub fn aggregate(drives: Vec<DriveSmart>, now: jiff::Timestamp) -> Self { /* ... */ }
+
+    /// Returns true if the snapshot is too old to trust OR if `checked_at` is
+    /// in the future (clock skew / NTP step backward / container with frozen
+    /// clock). Both cases collapse to "we can't trust this snapshot."
+    pub fn is_stale(&self, now: jiff::Timestamp, max_age_hours: u32) -> bool {
+        // now < checked_at  → future timestamp, fail-safe stale
+        // (now - checked_at) > max_age → genuine staleness
     }
-    pub fn is_stale(&self, now: jiff::Timestamp, max_age_hours: u32) -> bool { /* ... */ }
 }
 ```
 
 Module-level lint denies (`unwrap_used`, `expect_used`, `indexing_slicing`) mirror `src/disk/mod.rs`. This subsystem is observability — it must NEVER panic and take down the TUI or block CLI dispatch. Every fallible step degrades to `Unknown(<reason>)`.
+
+### Installed-state record
+
+`src/smart/installed.rs` defines a small companion record that captures what `pgforge smart install` set up. Persisted at `~/.local/state/pgforge/smart-installed.json`:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledState {
+    pub smartctl_path: PathBuf,       // absolute path, e.g. "/usr/sbin/smartctl"
+    pub user: String,                 // who the sudoers entry applies to
+    pub devices: Vec<PathBuf>,        // enumerated device paths granted in sudoers
+    pub installed_at: jiff::Timestamp,
+}
+```
+
+`run_smartctl` MUST read `InstalledState.smartctl_path` to know the absolute binary path; if `InstalledState` is missing → `Unknown(NoInstalledState)` (mapped to the same "?" TUI symbol). This solves the `$PATH` mismatch problem: the sudoers fragment grants exactly `/usr/sbin/smartctl ...`, the systemd service `ExecStart` uses the same absolute path, and the on-demand `check` resolves it via this record — all three agree by construction.
 
 ## Discovery
 
@@ -180,25 +219,39 @@ Failure modes:
 
 ## smartctl invocation
 
-`src/smart/check.rs::run_smartctl(device, transport) -> Result<Vec<u8>, SmartUnknownReason>`
+`src/smart/check.rs::run_smartctl(smartctl_path, device, sudo_mode) -> Result<Vec<u8>, SmartUnknownReason>`
 
-Spawns: `sudo -n smartctl -H -A -j {device}` via `tokio::process::Command`. NOT `-d {type}` — smartctl autodetects on Linux for the transports we care about, and locking the type in the sudoers entry would force enumeration.
+Where `sudo_mode` is:
+- `NonInteractive` — `sudo -n {smartctl_path} -H -A -j {device}`. Used by `--write-cache` (timer service) and by the on-demand TUI/CLI cache-read paths. Never prompts. Missing password → fast fail.
+- `Interactive` — `sudo {smartctl_path} -H -A -j {device}`. Used by `pgforge smart check` when run from a TTY without `--write-cache` — convenience for ad-hoc operator use when sudoers happens to not be set up yet.
 
-`-n` flag on sudo means non-interactive; if password is required → exit fast with stderr. We classify that as `Unknown(NoSudoers)`.
+`smartctl_path` comes from `InstalledState.smartctl_path` (preferred) or as a fallback from `which smartctl` (the `Interactive` path only). The absolute path MUST match the sudoers fragment byte-for-byte or the rule won't apply.
 
-Failure mapping:
-- `sudo: a password is required` (exit 1) → `Unknown(NoSudoers)`.
-- `command not found: smartctl` → `Unknown(NotInstalled)`.
-- `Smartctl open device: /dev/X failed: Unknown USB bridge` or similar — exit code 2 with specific stderr — → `Unknown(DeviceNotSupported)`.
-- Any other non-zero exit with JSON output → still try to parse (smartctl uses exit codes as bitfields; OVERALL_HEALTH=FAILED returns nonzero but JSON is valid). Only treat as Unknown if JSON is empty/unparseable.
+We do NOT pass `-d {type}` — smartctl autodetects on Linux for sata/sas/nvme, and locking the type in the sudoers entry would force per-type enumeration.
 
-Timeout: 5s per device via `tokio::time::timeout`. Hung device → `Unknown(ParseError)` (we don't have a more specific reason; logged for diagnostics).
+Failure mapping (per attempt):
+- `sudo: a password is required` (sudo exit 1, NonInteractive) → `Unknown(NoSudoers)`.
+- smartctl binary missing (sudo exit 1 with "command not found") → `Unknown(NotInstalled)`.
+- smartctl exit code 2 with stderr "Smartctl open device: /dev/X failed: No such file or directory" — device was hot-unplugged between install and check → `Unknown(DeviceMissing)`. Detected by ENOENT in stderr.
+- smartctl exit code 2 with stderr "Smartctl open device: /dev/X failed: Unknown USB bridge" / "Device does not support SMART" → `Unknown(DeviceNotSupported)`.
+- Any other non-zero exit WITH non-empty JSON stdout → still try to parse (smartctl exit codes are a bitfield; OVERALL_HEALTH=FAILED returns nonzero but JSON is valid). Only treat as Unknown if JSON is empty/unparseable.
+- Empty stdout, any exit code → `Unknown(ParseError)`.
+
+Timeout: 5s per device via `tokio::time::timeout`. Hung device → `Unknown(ParseError)`, logged at `warn`.
 
 ## Parsing logic
 
-`src/smart/check.rs::parse_smartctl_json(bytes, transport) -> DriveSmart`
+`src/smart/check.rs::parse_smartctl_json(bytes) -> DriveSmart`
 
-Dispatches to `parse_sata` or `parse_nvme` based on transport. Tolerant of unknown fields (serde `#[serde(default)]` where useful). If required fields are missing → `DriveSmart { status: Unknown, unknown_reason: Some(ParseError), reasons: vec!["missing field {name}"], ... }`.
+Dispatches on smartctl's own `device.protocol` field (`"ATA"`, `"SCSI"`, `"NVMe"`) — NOT on lsblk's `tran`. Reason: SAS-attached SATA drives (common on enterprise hardware) report `tran=sas` from lsblk and `device.protocol=ATA` from smartctl; trusting the smartctl-reported protocol always picks the right parser. lsblk transport is used only for discovery + the sudoers fragment; parsing is driven by what smartctl actually returns.
+
+Dispatch:
+- `device.protocol == "ATA"` → `parse_sata` (handles SATA and ATA-over-SAS)
+- `device.protocol == "SCSI"` → `parse_sata` (smartctl reports SAS-native drives as SCSI but the relevant attributes are the SAS error counters; for MVP we apply the same SATA rules and accept SAS-native is best-effort — flag as a known limitation)
+- `device.protocol == "NVMe"` → `parse_nvme`
+- anything else → `Unknown(ParseError)` with reason `"unsupported device.protocol={}"`
+
+Tolerant of unknown fields (serde `#[serde(default)]` where useful). If required fields are missing → `DriveSmart { status: Unknown, unknown_reason: Some(ParseError), reasons: vec!["missing field {name}"], ... }`.
 
 ### SATA / SAS
 
@@ -229,15 +282,15 @@ Rules (first match wins for status; reasons can accumulate from non-fatal levels
 
 ### NVMe
 
-Parsed shape:
+Parsed shape (note: `nvme_smart_health_information_log.temperature` is reported in **kelvin** in smartmontools 7.x — we read the top-level `temperature.current` Celsius value that smartctl normalises for us, not the raw kelvin field):
 
 ```json
 {
   "smart_status": { "passed": true },
   "model_name": "SK hynix BC901 HFS512GEJ9X108N",
+  "temperature": { "current": 38 },
   "nvme_smart_health_information_log": {
     "critical_warning":            0,
-    "temperature":                 38,
     "available_spare":             100,
     "available_spare_threshold":   10,
     "percentage_used":             3,
@@ -246,9 +299,9 @@ Parsed shape:
 }
 ```
 
-`critical_warning` is a NVMe spec bitmap — decode bits per nvme-cli convention:
+`critical_warning` is a NVMe spec bitmap — decode bits per the NVMe specification:
 - bit 0: available_spare below threshold
-- bit 1: temperature above threshold
+- bit 1: temperature above (or below) operational threshold
 - bit 2: NVM subsystem reliability degraded
 - bit 3: media is in read-only mode
 - bit 4: volatile memory backup device failed
@@ -260,10 +313,10 @@ Rules:
 3. `media_errors > 0` → Critical, reason `"media_errors={N}"`.
 4. `available_spare < available_spare_threshold` → Critical, reason `"available_spare={spare}% < threshold={thr}%"`.
 5. `percentage_used >= 80` → Warn, reason `"percentage_used={N}%"`.
-6. `temperature > 70` → Warn, reason `"Temperature={N}°C"`.
+6. `temperature.current > 70` → Warn, reason `"Temperature={N}°C"`. If `temperature.current` is missing, fall back to converting `nvme_smart_health_information_log.temperature` from kelvin (`celsius = kelvin - 273`); if that path also fails → skip the temperature rule for this drive (do NOT trip a false Warn).
 7. Otherwise Ok.
 
-Thresholds (60°C / 70°C / 80% / 48h) are constants in `src/smart/check.rs`, documented with sources (NVMe spec for spare/percentage; common SSD vendor docs for temperature). NOT configurable in MVP.
+Thresholds: `SATA_TEMP_WARN_C = 60`, `NVME_TEMP_WARN_C = 70`, `NVME_WEAR_WARN_PCT = 80` — constants in `src/smart/check.rs`, documented with sources (NVMe spec for spare/percentage; common SSD vendor docs for temperature). NOT configurable in MVP. (Note: `STALE_AFTER_HOURS = 48` lives in `src/smart/cache.rs` instead, since staleness is a cache concern.)
 
 ## Cache
 
@@ -281,19 +334,26 @@ pub fn read_cache(
     // 1. open file -> NotFound? return SmartHealth::unknown(NoCache)
     // 2. read -> serde_json::from_str::<SmartHealth>
     //    parse error? return SmartHealth::unknown(ParseError)
-    // 3. if now - checked_at > max_age_hours hours -> return SmartHealth::unknown(Stale)
-    //    BUT preserve drives Vec so TUI can show "stale data: 3 disks were all OK 50h ago"
-    //    via a `was_status: Option<SmartStatus>` field? No — keep type simple, just
-    //    return Unknown(Stale). Operator can `pgforge smart status` for detail.
+    // 3. if `now < checked_at` OR `(now - checked_at) > max_age_hours hours`
+    //    -> return SmartHealth::unknown(Stale)
+    //    (the `now < checked_at` arm handles clock skew / NTP step backward
+    //     / container with frozen-in-future clock; both cases collapse to
+    //     "we can't trust this snapshot")
+    //    Preserve drives Vec only inside the returned drives field? No — keep
+    //    type simple, return Unknown(Stale) with empty drives. Operator runs
+    //    `pgforge smart status` for the raw cache contents.
     // 4. otherwise return as-is
 }
 ```
 
+This function is sync I/O — a few-KB file read from local disk. We deliberately do NOT use `tokio::fs` here; the read takes microseconds and the brief block is harmless inside the TUI reader poller. Documented at the call site so the next person doesn't reach for `spawn_blocking`.
+
 Write path:
 ```rust
 pub fn write_cache(path: &Path, health: &SmartHealth) -> std::io::Result<()> {
-    // tempfile + rename for atomicity
-    // mode 0600 on the temp file before rename
+    // tempfile::NamedTempFile::new_in(path.parent()) so rename is same-filesystem,
+    // therefore atomic. Tempfile created with mode 0600 via OpenOptions before write.
+    // After serde_json::to_writer, persist() the tempfile to `path`.
 }
 ```
 
@@ -334,14 +394,15 @@ pgforge smart uninstall   # remove sudoers + timer + cache
 ### `pgforge smart install`
 
 Steps (each is its own logical phase, idempotent, prints what it did):
-1. **Probe smartmontools.** `which smartctl`. Missing → print install command (`sudo apt install smartmontools`) and exit code 1. Don't auto-install (the user might be on a non-apt distro).
+1. **Probe smartmontools.** `which smartctl` → absolute path. Missing → print install command (`sudo apt install smartmontools`) and exit code 1. Don't auto-install (user might be on a non-apt distro).
 2. **Discover disks.** Run `discover_disks()`. Zero result → print "no physical disks discovered (lsblk found nothing matching sata/sas/nvme)" and exit code 1 — refuse to install with nothing to monitor.
-3. **Write sudoers fragment.** Render fragment (see template below), pipe to `sudo tee /etc/sudoers.d/pgforge-smart > /dev/null`. User authenticates at this step. Refuse to overwrite if file exists and content differs UNLESS `--force` (idempotent re-run with no change is OK).
-4. **Validate sudoers.** `sudo visudo -c -f /etc/sudoers.d/pgforge-smart`. If fails → `sudo rm /etc/sudoers.d/pgforge-smart` and bail with the visudo error. This prevents locking the user out of sudo via a malformed fragment.
-5. **Write systemd-user units.** `~/.config/systemd/user/pgforge-smart.{service,timer}`. Idempotent overwrite (these are pgforge-generated, no manual edits expected).
-6. **Reload + enable + start timer.** `systemctl --user daemon-reload && systemctl --user enable --now pgforge-smart.timer`.
-7. **Run first check now** to populate cache and verify wiring end-to-end. `pgforge smart check --write-cache`.
-8. **Print summary.** Lines:
+3. **Render + validate sudoers fragment in a tempfile FIRST.** Render via `render_sudoers_fragment(user, smartctl_path, devices)`; if devices is empty the function returns `Err(InstallError::NoDevices)` (defense in depth with step 2). Write to a host-local tempfile (e.g. `/tmp/pgforge-smart-XXXXXX`). Run `sudo visudo -c -f /tmp/pgforge-smart-XXXXXX`. If validation fails → bail with visudo's error message; nothing has touched `/etc/sudoers.d/` yet, so sudo is unaffected.
+4. **Atomically install validated fragment.** Only after step 3 passes: `sudo install -m 0440 -o root -g root /tmp/pgforge-smart-XXXXXX /etc/sudoers.d/pgforge-smart`. `install` is atomic (rename under the hood) AND sets mode/owner in one operation — no window where the file is wrong-mode. Refuse to overwrite an existing file whose contents differ UNLESS `--force` (idempotent re-run with identical content is fine).
+5. **Write `InstalledState` record.** Serialize `{ smartctl_path, user, devices, installed_at }` to `~/.local/state/pgforge/smart-installed.json` (atomic write via `write_installed`). This is what `run_smartctl` reads at runtime to know which absolute path to invoke.
+6. **Write systemd-user units.** `~/.config/systemd/user/pgforge-smart.{service,timer}`. The service `ExecStart` bakes in the absolute `pgforge` binary path (resolved via `std::env::current_exe`, with `%h/.local/bin/pgforge` as fallback only if `current_exe` returns nothing useful). Idempotent overwrite — these are pgforge-generated, no manual edits expected.
+7. **Reload + enable + start timer.** `systemctl --user daemon-reload && systemctl --user enable --now pgforge-smart.timer`.
+8. **Run first check now** to populate cache and verify wiring end-to-end. `pgforge smart check --write-cache`.
+9. **Print summary.** Lines:
    - One line per discovered disk: `/dev/nvme0n1 (SK hynix BC901): SMART ok` (color via status).
    - Overall: `SMART: ok across 1 disk(s). Cache: ~/.local/state/pgforge/disk-smart.json. Next check: tomorrow ~03:00 (jittered).`
    - If all disks reported `Unknown(DeviceNotSupported)`:
@@ -360,7 +421,16 @@ Exit codes:
 
 ### `pgforge smart check [--write-cache]`
 
-Runs `discover_disks` → per-disk `run_smartctl` + parse → `SmartHealth::aggregate`. Always prints human-readable status to stdout:
+Runs `discover_disks` → per-disk `run_smartctl` + parse → `SmartHealth::aggregate`. Always prints human-readable status to stdout.
+
+Sudo interactivity:
+- Without `--write-cache`, when stdout is a TTY: calls `run_smartctl` with `sudo_mode = Interactive` (no `-n`). Lets a curious operator run `pgforge smart check` ad-hoc before `pgforge smart install` has set up sudoers; sudo prompts for password.
+- With `--write-cache` (the timer's invocation path): always `sudo_mode = NonInteractive` (`sudo -n`). Timer can't prompt. Missing sudoers → `Unknown(NoSudoers)` written to cache.
+- Without `--write-cache`, when stdout is not a TTY (e.g. piped, scripted): `sudo_mode = NonInteractive` as well, to avoid hanging waiting for input.
+
+`--write-cache` is marked `#[arg(hide = true)]` in the clap definition — it's an internal flag for the timer, not part of the operator-facing CLI surface.
+
+Output:
 
 ```
 SMART check (2026-05-17T08:42:11Z):
@@ -427,7 +497,7 @@ Idempotent — running on a clean host prints "nothing to remove" and exits 0.
 ```
 # pgforge SMART disk health checks
 #
-# Installed by `pgforge smart install` on 2026-05-17.
+# Installed by `pgforge smart install` on 2026-05-17T08:42:11Z.
 # Allows the pgforge-smart.timer (systemd-user) to read SMART data from
 # the disks discovered at install time. Each line is one exact device path
 # (no wildcards) so adding a new disk requires `pgforge smart install --force`.
@@ -441,8 +511,10 @@ pawel ALL=(root) NOPASSWD: /usr/sbin/smartctl -H -A -j /dev/sda
 Notes for the implementer / reviewer:
 - The user field is `whoami` of the install-time invoker, NOT a literal "pawel."
 - We deliberately enumerate exact device paths instead of `/dev/nvme*n*` wildcards. Sudoers wildcard semantics around `/` are subtle; an exact list is auditable and unambiguous.
-- The smartctl path comes from `which smartctl` at install time. If smartctl moves (uncommon but possible across distros) the next `pgforge smart install --force` updates it.
-- File mode: 0440 (sudoers default). `sudo tee` writes as root; visudo enforces ownership/mode on read.
+- The smartctl path comes from `which smartctl` at install time, persisted in `InstalledState.smartctl_path`, and used identically in (a) the sudoers fragment, (b) the systemd service `ExecStart`, and (c) the runtime `run_smartctl` invocation. Same byte-for-byte string in all three — that's the contract that makes the sudoers rule match.
+- File mode: 0440 (sudoers default), enforced by `sudo install -m 0440 -o root -g root` (NOT via `sudo tee`, which doesn't set mode atomically).
+- One rule per line (rather than a comma-separated `Cmnd_Spec_List`) is a deliberate readability choice — git diffs of the rendered fragment are line-by-device.
+- `render_sudoers_fragment(user, smartctl_path, &devices)` returns `Result<String, InstallError>` and returns `Err(InstallError::NoDevices)` for empty `devices`. The function never emits a fragment with zero `Cmnd_Spec` lines (which would parse cleanly via `visudo -c` but grant nothing — a silent install failure mode we want to refuse loudly).
 
 ## Systemd-user units
 
@@ -468,12 +540,14 @@ Description=pgforge SMART disk health check (writes cache)
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/pgforge smart check --write-cache
+ExecStart=/home/pawel/.local/bin/pgforge smart check --write-cache
 ```
 
-`Persistent=true` ensures a missed daily run fires on boot (laptop closed for the night, etc.). `RandomizedDelaySec=1h` so a fleet of pgforge boxes doesn't hit shared infra at the same instant — not a concern for single-host, kept for hygiene.
+`ExecStart` uses an **absolute** path resolved at install time via `std::env::current_exe()`. Falls back to `%h/.local/bin/pgforge` only if `current_exe` returns nothing useful (the same default location as `pgforge schedule install`). Persisted into the rendered unit file — no path-resolution at service-start time, no surprises when the pgforge binary is moved.
 
-The service uses `%h/.local/bin/pgforge` — the same install location as the existing `pgforge schedule install` flow.
+`Persistent=true` ensures a missed daily run fires on boot (laptop closed for the night, etc.). **Caveat**: `Persistent=true` only back-fills missed runs after the timer has fired at least once previously — the very first install does NOT trigger an immediate back-fill, which is why step 8 of `install` runs `pgforge smart check --write-cache` explicitly to populate the cache on day zero.
+
+`RandomizedDelaySec=1h` so a fleet of pgforge boxes doesn't hit shared infra at the same instant — not a concern for single-host, kept for hygiene.
 
 ## TUI integration
 
@@ -490,25 +564,32 @@ pub fn spawn_smart_reader(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Eager first read so the footer doesn't show "?" for a full minute.
-        let h = smart::cache::read_cache(&cache_path, now(), STALE_AFTER_HOURS);
+        let h = smart::cache::read_cache(
+            &cache_path, jiff::Timestamp::now(), smart::cache::STALE_AFTER_HOURS,
+        );
         let _ = tx.send(Event::SmartRefreshed(h));
 
         let mut iv = tokio::time::interval(SMART_READ_PERIOD);
         iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Skip the immediate first tick (already sent above)
+        // Consume the immediate first tick (interval fires immediately on first
+        // tick(); we already did the eager read above).
         iv.tick().await;
         loop {
             iv.tick().await;
-            let h = smart::cache::read_cache(&cache_path, now(), STALE_AFTER_HOURS);
+            let h = smart::cache::read_cache(
+                &cache_path, jiff::Timestamp::now(), smart::cache::STALE_AFTER_HOURS,
+            );
             let _ = tx.send(Event::SmartRefreshed(h));
         }
     })
 }
 ```
 
-60s tick is generous — cache only changes once a day, but a 60s tick means after a manual `pgforge smart check --write-cache` from another shell, the TUI catches up within a minute. Cheap: read+parse of a few-KB JSON file.
+This pattern diverges from `spawn_disk_health` (refresh.rs:148), which has no eager pre-read — relying on the immediate first tick of its 15s interval to populate the TUI. We add an explicit eager read here because the SMART poller's interval is 60s, and showing `SMART ?` for a full minute on TUI startup (when there's a valid cache sitting on disk) would be unnecessary.
 
-`now()` is `jiff::Timestamp::now()`. Reader does NO smartctl invocation, NO sudo, NO Docker call. Pure file read.
+`read_cache` is sync I/O — a few-KB file read from local disk, microseconds. We deliberately do NOT use `tokio::fs` or wrap in `spawn_blocking`; the brief block is harmless and the simpler call site is worth more. Documented in `cache.rs` so the next person doesn't reach for an async wrapper.
+
+Reader does NO smartctl invocation, NO sudo, NO Docker call. Pure file read.
 
 ### `AppState` field
 
@@ -585,15 +666,16 @@ This is purely text in the existing Help modal; no new modal, no new key.
 `src/cli.rs::dispatch` already does a pre-dispatch capacity banner. Extend it:
 
 ```rust
-// New: pre-dispatch SMART banner (Critical only).
+// New: pre-dispatch SMART banner (Critical only). Runs BEFORE the existing
+// capacity banner so SMART (more urgent — hardware) appears above Capacity
+// (less urgent — fixable by cleanup).
 if let Some(cmd) = &cli.command
     && should_emit_banner_for_command(cmd)
 {
     let cache_path = crate::smart::cache::default_cache_path();
-    let now = jiff::Timestamp::now();
     let sh = crate::smart::cache::read_cache(
         &cache_path,
-        now,
+        jiff::Timestamp::now(),
         crate::smart::cache::STALE_AFTER_HOURS,
     );
     if let Some(line) = format_smart_banner_line(&sh) {
@@ -602,13 +684,7 @@ if let Some(cmd) = &cli.command
     }
 }
 
-// Existing capacity banner stays below — SMART prints first.
-if let Some(cmd) = &cli.command
-    && should_emit_banner_for_command(cmd)
-    && let Ok(docker) = ...
-{
-    /* existing capacity banner */
-}
+// Existing capacity banner block stays below, unchanged.
 ```
 
 `format_smart_banner_line`:
@@ -624,13 +700,28 @@ pub fn format_smart_banner_line(h: &SmartHealth) -> Option<String> {
 }
 ```
 
-Color: red ANSI when stderr is a terminal (already gated by `should_emit_banner_for_command`).
+Use the `\u{26A0}` escape (matches existing cli.rs:255 capacity banner — no mixed-encoding lines in source). Color: red ANSI when stderr is a terminal (already gated by `should_emit_banner_for_command`).
 
-`Command::Smart { .. }` is added to the skip-list in `should_emit_banner_for_command` — running `pgforge smart status` should not print the SMART banner above its own output (redundant + noisy).
+Skip-list extension: append `| Command::Smart { .. }` to the existing match arm in `should_emit_banner_for_command(cmd)` (cli.rs:232–239). DO NOT create a parallel function — keeping one gating function is the whole point of the design. After the edit:
+
+```rust
+!matches!(cmd,
+    Command::Ls
+        | Command::Status { .. }
+        | Command::Snapshots { .. }
+        | Command::Dump { .. }
+        | Command::Snapshot { due: true, .. }
+        | Command::Smart { .. }   // NEW
+)
+```
+
+This skips the SMART banner for `pgforge smart status` (its own output is the SMART status — banner would be redundant), `pgforge smart check` (same), `pgforge smart install` (the install summary already covers it), and `pgforge smart uninstall`.
+
+When both banners fire (SMART Critical AND capacity Critical), stderr gets two lines, SMART first (red), capacity second (yellow or red).
 
 ## README addition
 
-New section under existing "Operations" (or top-level if Operations doesn't exist — TBD when looking at current README). Full text below; this is the explicit user-requested README documentation.
+The existing README already has a `### Disk pressure` subsection inside `## How it works` (around line 216). That subsection currently covers only the capacity signal. **Replace** it with a top-level `## Disk health` section (sibling to existing `## TUI mode`, `## Caveats`, etc., positioned after `## TUI mode` and before `## How it works`). The new section covers BOTH capacity (recap of what already shipped) and SMART (new content). Full text below — this is the explicit user-requested README documentation.
 
 ```markdown
 ## Disk health
@@ -734,18 +825,27 @@ pgforge smart uninstall  # remove sudoers + timer + cache
 
 #### Troubleshooting
 
-- **`SMART ?` after a successful install** — check `pgforge smart status` for
+- **`SMART ?` and you haven't run `pgforge smart install` yet** — run it.
+  The TUI shows `?` until the first check populates the cache.
+- **`SMART ?` after a successful install** — run `pgforge smart status` for
   the specific reason. Common: `NoSudoers` (re-run `pgforge smart install`),
   `Stale` (timer didn't fire — `systemctl --user status pgforge-smart.timer`),
-  `DeviceNotSupported` (your host doesn't expose SMART; expected on most VPS).
+  `DeviceNotSupported` (your host doesn't expose SMART; expected on most VPS),
+  `DeviceMissing` (a disk listed in the sudoers fragment was hot-unplugged;
+  re-run `pgforge smart install --force`).
 - **Timer didn't fire across a reboot** — `Persistent=true` means missed runs
-  fire on next boot. If still no run: `systemctl --user list-timers
-  pgforge-smart.timer`.
+  fire on next boot, BUT only after the timer has fired at least once
+  previously. The first install runs an immediate check explicitly to avoid
+  this. If a timer that has fired before still doesn't catch up after reboot:
+  `systemctl --user list-timers pgforge-smart.timer` and check linger is
+  enabled (`loginctl show-user $USER | grep Linger`).
 - **Added a new disk** — re-run `pgforge smart install --force` to refresh
   the sudoers fragment with the new device path.
 - **smartctl path is unusual on your distro** — `pgforge smart install`
-  detects it via `which smartctl` at install time; re-run install if it moves
-  (e.g., after migrating between distros).
+  detects it via `which smartctl` at install time and persists the absolute
+  path in `~/.local/state/pgforge/smart-installed.json`. Re-run install if it
+  moves (e.g., after migrating between distros, or after a smartmontools
+  package update that changed the binary location).
 ```
 
 ## Testing
@@ -754,10 +854,12 @@ pgforge smart uninstall  # remove sudoers + timer + cache
 
 - `tests/smart_parsing_test.rs`:
   - Load each fixture in `tests/fixtures/smart/`, call `parse_smartctl_json`, assert resulting `DriveSmart`.
-  - SATA fixtures: `ok`, `reallocated_3`, `pending_1`, `offline_uncorrectable_1`, `temp_65`, `temp_55`.
-  - NVMe fixtures: `ok`, `critical_warning_spare`, `critical_warning_temp`, `media_errors_5`, `spare_below_threshold`, `percentage_used_82`, `temp_75`.
+  - SATA fixtures: `sata_ok.json`, `sata_reallocated_3.json`, `sata_pending_1.json`, `sata_offline_uncorrectable_1.json`, `sata_temp_65.json`, `sata_temp_55.json`, `sas_attached_sata_ok.json` (verifies device.protocol=ATA dispatch when lsblk reports tran=sas).
+  - NVMe fixtures: `nvme_ok.json`, `nvme_critical_warning_spare.json`, `nvme_critical_warning_temp.json`, `nvme_media_errors_5.json`, `nvme_spare_below_threshold.json`, `nvme_percentage_used_82.json`, `nvme_temp_75_celsius.json` (top-level `temperature.current` path), `nvme_temp_only_kelvin.json` (fallback kelvin→celsius conversion when `temperature.current` is missing).
   - Malformed: empty bytes → `Unknown(ParseError)`; missing required fields → `Unknown(ParseError)`.
   - Unsupported device output → `Unknown(DeviceNotSupported)`.
+  - Missing device (`open device failed: No such file or directory`) → `Unknown(DeviceMissing)`.
+  - Unknown `device.protocol` (e.g. `"SAT"`) → `Unknown(ParseError)`.
 - `tests/smart_cache_test.rs`:
   - Round-trip: build `SmartHealth`, `write_cache` to tempdir, `read_cache` → equal.
   - Missing file → `Unknown(NoCache)`.
@@ -765,10 +867,13 @@ pgforge smart uninstall  # remove sudoers + timer + cache
   - `checked_at` older than 48h → `Unknown(Stale)`.
   - `checked_at` exactly 48h → `Unknown(Stale)` (boundary).
   - `checked_at` 47h59m → not stale, returns as-is.
+  - `checked_at` in the future (10 minutes ahead of `now`) → `Unknown(Stale)` (clock-skew fail-safe).
 - `tests/smart_install_test.rs`:
-  - `render_sudoers_fragment("pawel", &["/dev/nvme0n1", "/dev/sda"], "/usr/sbin/smartctl")` → byte-exact match against expected literal.
-  - `render_timer_unit()` and `render_service_unit()` → byte-exact (snapshot).
-  - No actual sudo, no actual write — just rendering tests.
+  - `render_sudoers_fragment("pawel", "/usr/sbin/smartctl", &["/dev/nvme0n1", "/dev/sda"])` → byte-exact match against expected literal.
+  - `render_sudoers_fragment("pawel", "/usr/sbin/smartctl", &[])` → `Err(InstallError::NoDevices)`.
+  - `render_timer_unit()` and `render_service_unit("/usr/sbin/smartctl", "/home/pawel/.local/bin/pgforge")` → byte-exact (snapshot). ExecStart contains the absolute pgforge path.
+  - `InstalledState` round-trip (build → write → read → equal).
+  - No actual sudo, no actual write to /etc — just rendering and tempdir tests.
 - `tests/cli_smart_banner_test.rs`:
   - `format_smart_banner_line` returns `Some` only for Critical.
   - Format contains device path + at least one reason.
@@ -796,9 +901,9 @@ The user runs `pgforge` on db-server after `pgforge smart install` and confirms:
 
 ## Risks
 
-1. **Malformed sudoers fragment locks the user out of sudo.** Mitigated by `visudo -c -f` validation BEFORE declaring install successful, and immediate removal if validation fails. Worst case the file is empty or removed — sudo continues to work via the user's other sudoers entries.
+1. **Malformed sudoers fragment locks the user out of sudo.** Mitigated by rendering and validating the fragment in a **tempfile** first (`sudo visudo -c -f /tmp/pgforge-smart-XXXXXX`), and only on validation success atomically installing via `sudo install -m 0440 -o root -g root` to `/etc/sudoers.d/pgforge-smart`. This means `/etc/sudoers.d/` is never touched by a malformed file — if validation fails, the live sudoers tree is unchanged and the user's existing sudo access is unaffected.
 2. **smartctl JSON schema varies between smartmontools versions.** Mitigated by tolerant parsing (missing fields → Unknown not crash) and version-stable fields (attribute IDs 5/197/198 are fixed in the ATA spec; NVMe smart-health-information-log field names are NVMe spec).
-3. **`lsblk` output format varies across util-linux versions.** Less risky than smartctl — the `-J` output for `NAME,TYPE,TRAN` has been stable since util-linux 2.27 (2015). Tolerant parsing with serde `#[serde(default)]` for optional fields.
+3. **`lsblk` output format varies across util-linux versions.** Less risky than smartctl — the `-J` output for `NAME,TYPE,TRAN` has been stable since util-linux 2.27 (2015). Some interim versions (≤ 2.38) had known quoting bugs with `-J` for unusual model strings (util-linux issue tracker); we mitigate by tolerant parsing with serde `#[serde(default)]` and by skipping any device whose JSON entry fails to deserialize rather than aborting the whole discovery.
 4. **`smartctl -d auto` autodetection might pick wrong type for exotic transports.** Unlikely on the sata/sas/nvme filter; if it happens, that disk reports `Unknown(DeviceNotSupported)` — graceful.
 5. **Container/VM environments (Docker container with `/dev` mounts, KVM virtio without passthrough)** will mostly fail SMART. This is the expected `Unknown(DeviceNotSupported)` path and is documented at install time.
 6. **Cache file privilege.** Written mode 0600 by the timer's service. Readable by the user only — fine for our threat model (no secrets in it).
