@@ -30,7 +30,7 @@ These came out of brainstorming with the user on 2026-05-17 and are not re-litig
 
 **In scope:**
 - New `pgforge smart` subcommand tree: `install`, `check`, `status`, `uninstall`.
-- New `src/smart/` module: `types.rs`, `check.rs`, `cache.rs`, `install.rs`, `mod.rs`.
+- New `src/smart/` module: `types.rs`, `check.rs`, `cache.rs`, `installed.rs`, `install.rs`, `mod.rs`.
 - Daily systemd-user `pgforge-smart.timer` + `.service` (linger already configured on db-server, no new infra).
 - Sudoers fragment `/etc/sudoers.d/pgforge-smart` written by `pgforge smart install` and validated with `visudo -c -f` before declaring success.
 - Cache file at `~/.local/state/pgforge/disk-smart.json` (XDG_STATE_HOME default, override via env).
@@ -56,24 +56,24 @@ These came out of brainstorming with the user on 2026-05-17 and are not re-litig
 
 | Path | Status | Responsibility |
 |---|---|---|
-| `src/smart/mod.rs` | new | `pub mod {types, check, cache, install};` + file-level `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]` mirroring `src/disk/mod.rs` |
+| `src/smart/mod.rs` | new | `pub mod {types, check, cache, installed, install};` + file-level `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]` mirroring `src/disk/mod.rs` |
 | `src/smart/types.rs` | new | `SmartStatus`, `SmartUnknownReason`, `DriveSmart`, `SmartHealth`; serde derives; aggregate helper |
 | `src/smart/check.rs` | new | `discover_disks()` (lsblk JSON wrap), `run_smartctl(device)` (subprocess wrap), `parse_smartctl_json(json, transport)` (per-transport dispatch); `check_all()` that wires the three together |
 | `src/smart/cache.rs` | new | `default_cache_path()`, `read_cache(path, now, max_age) -> SmartHealth`, `write_cache(path, &health)`, `STALE_AFTER_HOURS` constant |
 | `src/smart/installed.rs` | new | `InstalledState { smartctl_path: PathBuf, user: String, devices: Vec<PathBuf>, installed_at: jiff::Timestamp }`; `default_installed_path()` → `$XDG_STATE_HOME/pgforge/smart-installed.json`; `read_installed() -> Option<InstalledState>`, `write_installed(&InstalledState)` |
-| `src/smart/install.rs` | new | `install_all(opts)` (writes sudoers via tempfile→`visudo -c -f`→`sudo install -m 0440`, writes timer units, daemon-reload+enable+start, writes `InstalledState`, runs first check), `uninstall_all()` (reverse), `render_sudoers_fragment(user, smartctl_path, devices) -> Result<String, InstallError>`, `render_timer_unit()`, `render_service_unit(smartctl_path)`, `postinstall_summary(&SmartHealth)` |
+| `src/smart/install.rs` | new | `install_all(opts)` (writes sudoers via tempfile→`visudo -c -f`→`sudo install -m 0440`, writes timer units, daemon-reload+enable+start, writes `InstalledState`, runs first check), `uninstall_all()` (reverse), `render_sudoers_fragment(user, smartctl_path, devices) -> Result<String, InstallError>`, `render_timer_unit() -> String`, `render_service_unit(pgforge_path) -> String` (the service invokes `pgforge smart check --write-cache`, so it bakes in the absolute `pgforge` binary path, NOT the smartctl path), `postinstall_summary(&SmartHealth)` |
 | `src/commands/smart.rs` | new | dispatch for `pgforge smart {install, check, status, uninstall}`; argument parsing; human-readable output |
 | `src/cli.rs` | modify | add `Command::Smart { #[command(subcommand)] action: SmartAction }`; extend `dispatch` to read SMART cache + print Critical banner ABOVE capacity banner (same gating); extend `should_emit_banner_for_command` impact (SmartCheck etc. excluded from banner same as Ls) |
 | `src/tui/events.rs` | modify | new `Event::SmartRefreshed(SmartHealth)` |
 | `src/tui/app.rs` | modify | `smart_health: Option<SmartHealth>` field; `apply_event` arm for SmartRefreshed |
 | `src/tui/refresh.rs` | modify | new `spawn_smart_reader(tx)` poller (60s, reads cache file via `smart::cache::read_cache`, sends `Event::SmartRefreshed`); wire into `spawn_pollers` |
 | `src/tui/ui/bottom.rs` | modify | extend Layout::horizontal to 4 zones `[content, smart, disk, version]`; add `format_smart_zone(Option<&SmartHealth>)` mirroring `format_disk_zone` |
-| `tests/smart_parsing_test.rs` | new | fixtures in `tests/fixtures/smart/`: `sata_ok.json`, `sata_reallocated.json`, `sata_pending.json`, `sata_offline_uncorrectable.json`, `sata_temp_high.json`, `nvme_ok.json`, `nvme_critical_warning.json`, `nvme_media_errors.json`, `nvme_spare_below_threshold.json`, `nvme_percentage_used_82.json`, `unsupported_device.json`. Each loaded + parsed + asserted against expected `DriveSmart`. |
+| `tests/smart_parsing_test.rs` | new | Load each fixture in `tests/fixtures/smart/` and assert the resulting `DriveSmart`. Full per-fixture list in the Testing section below. |
 | `tests/smart_cache_test.rs` | new | round-trip serialize→write→read→deserialize equals original; missing file → `Unknown(NoCache)`; corrupt JSON → `Unknown(ParseError)`; older than 48h → `Unknown(Stale)`; valid + fresh → unchanged |
-| `tests/smart_install_test.rs` | new | `render_sudoers_fragment("pawel", &["/dev/nvme0n1", "/dev/sda"])` returns exactly the expected bytes; `render_timer_unit()` and `render_service_unit()` snapshot tests. Does NOT actually call sudo or write files. |
+| `tests/smart_install_test.rs` | new | Snapshot-tests for `render_sudoers_fragment`, `render_timer_unit`, `render_service_unit` (all called with the canonical 3-arg / 0-arg / 1-arg signatures listed in `src/smart/install.rs`) + `InstalledState` round-trip. Does NOT actually call sudo or write to /etc. |
 | `tests/cli_smart_banner_test.rs` | new | `format_smart_banner_line(&health)` returns Some only for Critical; returns None for Ok/Warn/Unknown/Stale; format string contains device + reasons |
 | `tests/tui_smart_zone_test.rs` | new | `format_smart_zone(None)` → "SMART ?" dim; `format_smart_zone(Some(ok))` → "SMART ok" dim; `format_smart_zone(Some(warn))` → "SMART warn" yellow; `format_smart_zone(Some(critical))` → "SMART fail" red |
-| `tests/fixtures/smart/` | new | JSON sample outputs (real `smartctl -H -A -j` runs captured from a test box, sanitized of serial numbers) |
+| `tests/fixtures/smart/` | new | JSON sample outputs (real `smartctl -H -A -j` runs captured from a test box, sanitized of serial numbers). Full file list enumerated in the Testing section below — one fixture per parsing path including the SAS-attached-SATA, NVMe-kelvin-fallback, hot-unplug, and unsupported-device branches. |
 | `README.md` | modify | new top-level subsection "Disk health (SMART)" under existing "Operations" or equivalent — see README section below |
 | Deps | none new | `serde_json` already in tree; subprocess via `tokio::process::Command`; no new crates |
 
@@ -192,7 +192,9 @@ pub struct InstalledState {
     pub smartctl_path: PathBuf,       // absolute path, e.g. "/usr/sbin/smartctl"
     pub user: String,                 // who the sudoers entry applies to
     pub devices: Vec<PathBuf>,        // enumerated device paths granted in sudoers
-    pub installed_at: jiff::Timestamp,
+    pub installed_at: jiff::Timestamp, // forensics — surfaced by `pgforge smart status`
+                                       // as "installed N days ago" so operators can spot
+                                       // a stale install relative to a recently-added disk
 }
 ```
 
@@ -497,7 +499,7 @@ Idempotent — running on a clean host prints "nothing to remove" and exits 0.
 ```
 # pgforge SMART disk health checks
 #
-# Installed by `pgforge smart install` on 2026-05-17T08:42:11Z.
+# Installed by `pgforge smart install` on {installed_at}.   ← templated at install time
 # Allows the pgforge-smart.timer (systemd-user) to read SMART data from
 # the disks discovered at install time. Each line is one exact device path
 # (no wildcards) so adding a new disk requires `pgforge smart install --force`.
@@ -585,7 +587,7 @@ pub fn spawn_smart_reader(
 }
 ```
 
-This pattern diverges from `spawn_disk_health` (refresh.rs:148), which has no eager pre-read — relying on the immediate first tick of its 15s interval to populate the TUI. We add an explicit eager read here because the SMART poller's interval is 60s, and showing `SMART ?` for a full minute on TUI startup (when there's a valid cache sitting on disk) would be unnecessary.
+This pattern diverges from the existing `spawn_disk_health` poller in `src/tui/refresh.rs`, which has no eager pre-read — relying on the immediate first tick of its 15s interval to populate the TUI. We add an explicit eager read here because the SMART poller's interval is 60s, and showing `SMART ?` for a full minute on TUI startup (when there's a valid cache sitting on disk) would be unnecessary.
 
 `read_cache` is sync I/O — a few-KB file read from local disk, microseconds. We deliberately do NOT use `tokio::fs` or wrap in `spawn_blocking`; the brief block is harmless and the simpler call site is worth more. Documented in `cache.rs` so the next person doesn't reach for an async wrapper.
 
@@ -702,7 +704,7 @@ pub fn format_smart_banner_line(h: &SmartHealth) -> Option<String> {
 
 Use the `\u{26A0}` escape (matches existing cli.rs:255 capacity banner — no mixed-encoding lines in source). Color: red ANSI when stderr is a terminal (already gated by `should_emit_banner_for_command`).
 
-Skip-list extension: append `| Command::Smart { .. }` to the existing match arm in `should_emit_banner_for_command(cmd)` (cli.rs:232–239). DO NOT create a parallel function — keeping one gating function is the whole point of the design. After the edit:
+Skip-list extension: append `| Command::Smart { .. }` to the existing match arm in `should_emit_banner_for_command(cmd)` (function defined in `src/cli.rs`, see the existing implementation for the exact match arm). DO NOT create a parallel function — keeping one gating function is the whole point of the design. After the edit:
 
 ```rust
 !matches!(cmd,
@@ -721,7 +723,7 @@ When both banners fire (SMART Critical AND capacity Critical), stderr gets two l
 
 ## README addition
 
-The existing README already has a `### Disk pressure` subsection inside `## How it works` (around line 216). That subsection currently covers only the capacity signal. **Replace** it with a top-level `## Disk health` section (sibling to existing `## TUI mode`, `## Caveats`, etc., positioned after `## TUI mode` and before `## How it works`). The new section covers BOTH capacity (recap of what already shipped) and SMART (new content). Full text below — this is the explicit user-requested README documentation.
+The existing README already has a `### Disk pressure` subsection inside `## How it works`. That subsection currently covers only the capacity signal. The new `## Disk health` top-level section described below covers BOTH capacity (recapping what already shipped) and SMART (new content), so the old `### Disk pressure` subsection inside `## How it works` should be **deleted** in the same diff — its content is fully superseded. The new top-level section sits as a sibling to existing `## TUI mode`, `## Caveats`, etc., positioned after `## TUI mode` and before `## How it works`. Full text below — this is the explicit user-requested README documentation.
 
 ```markdown
 ## Disk health
