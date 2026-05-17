@@ -1,0 +1,13 @@
+{
+  "device": { "protocol": "ATA", "name": "/dev/sda" },
+  "model_name": "Samsung SSD 870 EVO 500GB",
+  "smart_status": { "passed": true },
+  "ata_smart_attributes": {
+    "table": [
+      { "id": 5,   "name": "Reallocated_Sector_Ct",   "raw": { "value": 0 } },
+      { "id": 194, "name": "Temperature_Celsius",     "raw": { "value": 55 } },
+      { "id": 197, "name": "Current_Pending_Sector",  "raw": { "value": 0 } },
+      { "id": 198, "name": "Offline_Uncorrectable",   "raw": { "value": 0 } }
+    ]
+  }
+}

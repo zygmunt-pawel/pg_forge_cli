@@ -1,0 +1,13 @@
+{
+  "device": { "protocol": "NVMe", "name": "/dev/nvme0n1" },
+  "model_name": "SK hynix BC901 HFS512GEJ9X108N",
+  "smart_status": { "passed": true },
+  "temperature": { "current": 40 },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 82,
+    "media_errors": 0
+  }
+}

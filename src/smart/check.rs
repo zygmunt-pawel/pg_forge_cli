@@ -157,6 +157,262 @@ pub fn classify_smartctl_failure(stderr: &str) -> SmartUnknownReason {
     SmartUnknownReason::ParseError
 }
 
+use crate::smart::types::{DriveSmart, SmartStatus};
+
+pub const SATA_TEMP_WARN_C:   i64 = 60;
+pub const NVME_TEMP_WARN_C:   i64 = 70;
+pub const NVME_WEAR_WARN_PCT: u32 = 80;
+
+/// Top-level structural decoder. We only deserialize what we actually need;
+/// `#[serde(default)]` on every nested field so the parser tolerates older /
+/// newer smartmontools schema variations.
+#[derive(Deserialize)]
+struct SmartctlJson {
+    #[serde(default)]
+    device: SmartctlDevice,
+    #[serde(default)]
+    model_name: Option<String>,
+    #[serde(default)]
+    smart_status: SmartctlSmartStatus,
+    #[serde(default)]
+    temperature: Option<SmartctlTemperature>,
+    #[serde(default)]
+    ata_smart_attributes: Option<AtaSmartAttributes>,
+    #[serde(default)]
+    nvme_smart_health_information_log: Option<NvmeSmartLog>,
+}
+
+#[derive(Default, Deserialize)]
+struct SmartctlDevice {
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct SmartctlSmartStatus {
+    #[serde(default)]
+    passed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct SmartctlTemperature {
+    #[serde(default)]
+    current: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct AtaSmartAttributes {
+    #[serde(default)]
+    table: Vec<AtaAttribute>,
+}
+
+#[derive(Deserialize)]
+struct AtaAttribute {
+    id: u8,
+    #[serde(default)]
+    name: Option<String>,
+    raw: AtaRaw,
+}
+
+#[derive(Deserialize)]
+struct AtaRaw {
+    value: i64,
+}
+
+#[derive(Deserialize)]
+struct NvmeSmartLog {
+    #[serde(default)] critical_warning:          Option<u32>,
+    #[serde(default)] available_spare:           Option<u32>,
+    #[serde(default)] available_spare_threshold: Option<u32>,
+    #[serde(default)] percentage_used:           Option<u32>,
+    #[serde(default)] media_errors:              Option<u64>,
+    #[serde(default)] temperature:               Option<i64>, // kelvin (older smartmontools)
+}
+
+/// Parse one device's `smartctl -H -A -j` JSON output. Dispatches on
+/// `device.protocol` (NOT the lsblk transport — SAS-attached SATA reports
+/// protocol="ATA" even though lsblk called the transport "sas"). Any failure
+/// produces a `DriveSmart` with `SmartStatus::Unknown` and a specific
+/// `SmartUnknownReason`.
+pub fn parse_smartctl_json(json: &[u8]) -> DriveSmart {
+    let parsed: SmartctlJson = match serde_json::from_slice(json) {
+        Ok(p)  => p,
+        Err(_) => return unknown_drive("?", "", SmartUnknownReason::ParseError, "json parse failed"),
+    };
+    let device = parsed.device.name.clone().unwrap_or_else(|| "?".to_string());
+    let model  = parsed.model_name.clone().unwrap_or_default();
+    let protocol = parsed.device.protocol.clone().unwrap_or_default();
+
+    match protocol.as_str() {
+        // SAS-native drives also come through as protocol="SCSI" — the
+        // parser silently returns Ok with no reasons because parse_sata
+        // only iterates ata_smart_attributes.table (which SAS-native does
+        // not have). This is a spec-documented best-effort limitation;
+        // covering real SAS error counters is queued separately.
+        "ATA" | "SCSI" => parse_sata(&parsed, &device, &model, &protocol),
+        "NVMe"         => parse_nvme(&parsed, &device, &model, &protocol),
+        other => unknown_drive(
+            &device, "",  // empty transport (NOT the reason name — that ends up rendered as a label)
+            SmartUnknownReason::ParseError,
+            &format!("unsupported device.protocol={other}"),
+        ),
+    }
+}
+
+fn unknown_drive(device: &str, transport: &str, reason: SmartUnknownReason, msg: &str) -> DriveSmart {
+    DriveSmart {
+        device: device.to_string(),
+        model: String::new(),
+        transport: transport.to_string(),
+        status: SmartStatus::Unknown,
+        reasons: vec![msg.to_string()],
+        unknown_reason: Some(reason),
+    }
+}
+
+fn parse_sata(p: &SmartctlJson, device: &str, model: &str, transport: &str) -> DriveSmart {
+    let mut reasons: Vec<String> = Vec::new();
+    let mut status = SmartStatus::Ok;
+    let bump = |s: SmartStatus, r: String, status: &mut SmartStatus, reasons: &mut Vec<String>| {
+        if s.rank() > status.rank() {
+            *status = s;
+        }
+        reasons.push(r);
+    };
+
+    if p.smart_status.passed == Some(false) {
+        bump(SmartStatus::Critical, "OVERALL_HEALTH=FAILED".to_string(), &mut status, &mut reasons);
+    }
+
+    let table: &[AtaAttribute] = p
+        .ata_smart_attributes
+        .as_ref()
+        .map(|a| a.table.as_slice())
+        .unwrap_or(&[]);
+    for attr in table {
+        let name = attr.name.clone().unwrap_or_default();
+        match attr.id {
+            5  if attr.raw.value > 0 => bump(
+                SmartStatus::Critical,
+                format!("Reallocated_Sector_Ct={}", attr.raw.value),
+                &mut status, &mut reasons,
+            ),
+            197 if attr.raw.value > 0 => bump(
+                SmartStatus::Critical,
+                format!("Current_Pending_Sector={}", attr.raw.value),
+                &mut status, &mut reasons,
+            ),
+            198 if attr.raw.value > 0 => bump(
+                SmartStatus::Critical,
+                format!("Offline_Uncorrectable={}", attr.raw.value),
+                &mut status, &mut reasons,
+            ),
+            190 | 194 if attr.raw.value > SATA_TEMP_WARN_C => bump(
+                SmartStatus::Warn,
+                format!("Temperature={}", attr.raw.value),
+                &mut status, &mut reasons,
+            ),
+            _ => { let _ = name; }
+        }
+    }
+
+    DriveSmart {
+        device: device.to_string(),
+        model: model.to_string(),
+        transport: transport.to_string(),
+        status,
+        reasons,
+        unknown_reason: None,
+    }
+}
+
+/// Decode a NVMe critical_warning bitmap into human-readable bit names per the
+/// NVMe spec. Empty Vec when no bits are set.
+fn decode_nvme_critical_warning(bits: u32) -> Vec<String> {
+    let names = [
+        (0, "available_spare_below_threshold"),
+        (1, "temperature_above_threshold"),
+        (2, "nvm_reliability_degraded"),
+        (3, "media_read_only"),
+        (4, "volatile_memory_backup_failed"),
+        (5, "persistent_memory_region_unreliable"),
+    ];
+    names.iter()
+        .filter(|(bit, _)| (bits >> bit) & 1 == 1)
+        .map(|(_, name)| (*name).to_string())
+        .collect()
+}
+
+fn parse_nvme(p: &SmartctlJson, device: &str, model: &str, transport: &str) -> DriveSmart {
+    let mut reasons: Vec<String> = Vec::new();
+    let mut status = SmartStatus::Ok;
+    let bump = |s: SmartStatus, r: String, status: &mut SmartStatus, reasons: &mut Vec<String>| {
+        if s.rank() > status.rank() {
+            *status = s;
+        }
+        reasons.push(r);
+    };
+
+    if p.smart_status.passed == Some(false) {
+        bump(SmartStatus::Critical, "OVERALL_HEALTH=FAILED".to_string(), &mut status, &mut reasons);
+    }
+
+    let log = match &p.nvme_smart_health_information_log {
+        Some(l) => l,
+        None => {
+            return unknown_drive(
+                device, transport,
+                SmartUnknownReason::ParseError,
+                "missing nvme_smart_health_information_log",
+            );
+        }
+    };
+
+    if let Some(cw) = log.critical_warning && cw != 0 {
+        let decoded = decode_nvme_critical_warning(cw);
+        let joined = if decoded.is_empty() {
+            format!("critical_warning={cw}")
+        } else {
+            format!("critical_warning: {}", decoded.join(","))
+        };
+        bump(SmartStatus::Critical, joined, &mut status, &mut reasons);
+    }
+    if let Some(me) = log.media_errors && me > 0 {
+        bump(SmartStatus::Critical, format!("media_errors={me}"), &mut status, &mut reasons);
+    }
+    if let (Some(spare), Some(thr)) = (log.available_spare, log.available_spare_threshold)
+        && spare < thr
+    {
+        bump(
+            SmartStatus::Critical,
+            format!("available_spare={spare}% < threshold={thr}%"),
+            &mut status, &mut reasons,
+        );
+    }
+    if let Some(pct) = log.percentage_used && pct >= NVME_WEAR_WARN_PCT {
+        bump(SmartStatus::Warn, format!("percentage_used={pct}%"), &mut status, &mut reasons);
+    }
+
+    // Prefer the normalised top-level Celsius. Fall back to kelvin in
+    // nvme_smart_health_information_log.temperature (older smartmontools).
+    let temp_c: Option<i64> = p.temperature.as_ref().and_then(|t| t.current)
+        .or_else(|| log.temperature.map(|k| k - 273));
+    if let Some(c) = temp_c && c > NVME_TEMP_WARN_C {
+        bump(SmartStatus::Warn, format!("Temperature={c}"), &mut status, &mut reasons);
+    }
+
+    DriveSmart {
+        device: device.to_string(),
+        model: model.to_string(),
+        transport: transport.to_string(),
+        status,
+        reasons,
+        unknown_reason: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing)]
