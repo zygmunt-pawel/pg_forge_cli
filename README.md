@@ -182,9 +182,16 @@ schedule install` will print a loud warning if linger isn't enabled.
 `pgforge` with no subcommand launches the interactive dashboard (ratatui):
 
 - `↑`/`↓` or `j`/`k` — navigate the instance list
-- `s` snapshot · `c` clone · `R` rotate · `u` upgrade · `r` restore · `t` set snapshot hour
 - `Enter` — copy the connection string (with password) to the clipboard
-- `e` — full snapshot list · `?` — error detail · `q` — quit
+- `n` — create a new instance
+- `a` — open the **Actions** menu (snapshot / clone / rotate / preset / time / restore / destroy / upgrade / snapshots history) for the selected instance
+- `?` — help (or error detail when an op has failed)
+- `q` — quit
+
+Disk usage of the host (worst across Docker volume, pgforge state, and
+pgforge dumps filesystems) is shown in the bottom bar as `Disk N%` —
+yellow at ≥ 80%, red at ≥ 90%. `Disk ?` means pgforge could not
+measure (e.g. Docker daemon unreachable).
 
 A red `⚠BACKUP` badge marks any instance whose scheduled backups are failing
 (last attempt newer than last success).
@@ -205,6 +212,21 @@ files under `~/.local/share/pgforge/instances/`; writes are atomic (temp-file
 + fsync + rename, with a parent-directory fsync) and serialized with an
 advisory lock so
 the scheduler, the TUI, and interactive commands can't clobber each other.
+
+### Disk pressure
+
+Every interactive `pgforge` command (everything except `ls`, `status`,
+`snapshots`, `dump`, and `snapshot --due`) prints a one-line banner to
+stderr when the host disk is at ≥ 80%:
+
+```
+⚠ Disk 92% full on docker (/var/lib/docker) — Postgres writes / WAL
+  archiving WILL start failing.
+```
+
+The banner is suppressed when stderr is not a terminal (so pipes,
+cron, and `make` see clean output). The TUI corner shows the same
+signal continuously.
 
 ## Caveats
 
