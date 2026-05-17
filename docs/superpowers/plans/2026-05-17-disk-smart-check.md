@@ -301,7 +301,10 @@ impl SmartStatus {
     /// Severity ordering: Unknown < Ok < Warn < Critical.
     /// Matches `DiskStatus::rank` in `src/disk/health.rs` so aggregate logic
     /// is consistent across the two health surfaces.
-    fn rank(self) -> u8 {
+    ///
+    /// `pub(crate)` so the SATA/NVMe parsers in `src/smart/check.rs` can use it
+    /// without re-implementing the rank elsewhere.
+    pub(crate) fn rank(self) -> u8 {
         match self {
             SmartStatus::Unknown  => 0,
             SmartStatus::Ok       => 1,
@@ -377,17 +380,13 @@ impl SmartHealth {
             h.checked_at = now;
             return h;
         }
-        let worst_idx = drives
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, d)| d.status.rank())
-            .map(|(i, _)| i);
-        let worst_idx = match worst_idx {
-            Some(i) => i,
-            None    => 0,
-        };
-        let worst = match drives.get(worst_idx) {
-            Some(d) => d.clone(),
+        // Find worst drive directly (no index dance — clippy::indexing_slicing
+        // is denied at the module level). `.max_by_key` is stable: ties go to
+        // the LATER element, but for ties we explicitly want the FIRST, so we
+        // reverse-iterate and call .min_by_key on the rank with the reverse
+        // ordering applied. Simpler: clone the iter and use cloned().
+        let worst = match drives.iter().max_by_key(|d| d.status.rank()).cloned() {
+            Some(d) => d,
             None    => return Self::unknown(SmartUnknownReason::ParseError),
         };
         let all_unknown = drives.iter().all(|d| d.status == SmartStatus::Unknown);
@@ -416,10 +415,29 @@ impl SmartHealth {
         match now.since(self.checked_at) {
             Ok(span) => {
                 let hours = span.total(jiff::Unit::Hour).unwrap_or(0.0);
-                hours > max_age_hours as f64
+                // >= so that EXACTLY max_age is stale (matches the test
+                // `is_stale_at_48h_boundary` and spec acceptance "48h exactly → Stale").
+                hours >= max_age_hours as f64
             }
             Err(_) => true, // unrepresentable -> treat as stale
         }
+    }
+}
+
+impl std::fmt::Display for SmartUnknownReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SmartUnknownReason::NotInstalled       => "smartctl not installed",
+            SmartUnknownReason::NoSudoers          => "sudoers fragment missing or sudo password required",
+            SmartUnknownReason::NoInstalledState   => "`pgforge smart install` has not been run",
+            SmartUnknownReason::NoDevicesFound     => "no physical disks found by lsblk",
+            SmartUnknownReason::DeviceNotSupported => "device does not expose SMART",
+            SmartUnknownReason::DeviceMissing      => "device path no longer exists (hot-unplugged?)",
+            SmartUnknownReason::Stale              => "cache is stale",
+            SmartUnknownReason::NoCache            => "no cache file",
+            SmartUnknownReason::ParseError         => "smartctl JSON or cache JSON failed to parse",
+        };
+        f.write_str(s)
     }
 }
 ```
@@ -1161,7 +1179,7 @@ EOF
 **Files:**
 - Modify: `src/smart/check.rs`
 - Create: `tests/smart_parsing_test.rs`
-- Create: `tests/fixtures/smart/*.json` (13 fixtures)
+- Create: `tests/fixtures/smart/*.json` (15 fixtures, listed below)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1240,6 +1258,14 @@ fn nvme_critical_warning_spare() {
     let d = parse_smartctl_json(&load("nvme_critical_warning_spare.json"));
     assert_eq!(d.status, SmartStatus::Critical);
     assert!(d.reasons.iter().any(|r| r.contains("available_spare_below_threshold")));
+}
+
+#[test]
+fn nvme_critical_warning_temp() {
+    // bit 1 of critical_warning = temperature_above_threshold
+    let d = parse_smartctl_json(&load("nvme_critical_warning_temp.json"));
+    assert_eq!(d.status, SmartStatus::Critical);
+    assert!(d.reasons.iter().any(|r| r.contains("temperature_above_threshold")));
 }
 
 #[test]
@@ -1462,6 +1488,24 @@ Create `tests/fixtures/smart/nvme_critical_warning_spare.json`:
 }
 ```
 
+Create `tests/fixtures/smart/nvme_critical_warning_temp.json` (bit 1 = temperature_above_threshold):
+
+```json
+{
+  "device": { "protocol": "NVMe", "name": "/dev/nvme0n1" },
+  "model_name": "SK hynix BC901 HFS512GEJ9X108N",
+  "smart_status": { "passed": true },
+  "temperature": { "current": 80 },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 2,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 30,
+    "media_errors": 0
+  }
+}
+```
+
 Create `tests/fixtures/smart/nvme_media_errors_5.json`:
 
 ```json
@@ -1644,17 +1688,22 @@ struct NvmeSmartLog {
 pub fn parse_smartctl_json(json: &[u8]) -> DriveSmart {
     let parsed: SmartctlJson = match serde_json::from_slice(json) {
         Ok(p)  => p,
-        Err(_) => return unknown_drive("?", "ParseError", SmartUnknownReason::ParseError, "json parse failed"),
+        Err(_) => return unknown_drive("?", "", SmartUnknownReason::ParseError, "json parse failed"),
     };
     let device = parsed.device.name.clone().unwrap_or_else(|| "?".to_string());
     let model  = parsed.model_name.clone().unwrap_or_default();
     let protocol = parsed.device.protocol.clone().unwrap_or_default();
 
     match protocol.as_str() {
+        // SAS-native drives also come through as protocol="SCSI" — the
+        // parser silently returns Ok with no reasons because parse_sata
+        // only iterates ata_smart_attributes.table (which SAS-native does
+        // not have). This is a spec-documented best-effort limitation;
+        // covering real SAS error counters is queued separately.
         "ATA" | "SCSI" => parse_sata(&parsed, &device, &model, &protocol),
         "NVMe"         => parse_nvme(&parsed, &device, &model, &protocol),
         other => unknown_drive(
-            &device, &protocol,
+            &device, "",  // empty transport (NOT the reason name — that ends up rendered as a label)
             SmartUnknownReason::ParseError,
             &format!("unsupported device.protocol={other}"),
         ),
@@ -1675,8 +1724,8 @@ fn unknown_drive(device: &str, transport: &str, reason: SmartUnknownReason, msg:
 fn parse_sata(p: &SmartctlJson, device: &str, model: &str, transport: &str) -> DriveSmart {
     let mut reasons: Vec<String> = Vec::new();
     let mut status = SmartStatus::Ok;
-    let mut bump = |s: SmartStatus, r: String, status: &mut SmartStatus, reasons: &mut Vec<String>| {
-        if (s as u8) > (*status as u8) {
+    let bump = |s: SmartStatus, r: String, status: &mut SmartStatus, reasons: &mut Vec<String>| {
+        if s.rank() > status.rank() {
             *status = s;
         }
         reasons.push(r);
@@ -1748,8 +1797,8 @@ fn decode_nvme_critical_warning(bits: u32) -> Vec<String> {
 fn parse_nvme(p: &SmartctlJson, device: &str, model: &str, transport: &str) -> DriveSmart {
     let mut reasons: Vec<String> = Vec::new();
     let mut status = SmartStatus::Ok;
-    let mut bump = |s: SmartStatus, r: String, status: &mut SmartStatus, reasons: &mut Vec<String>| {
-        if (s as u8) > (*status as u8) {
+    let bump = |s: SmartStatus, r: String, status: &mut SmartStatus, reasons: &mut Vec<String>| {
+        if s.rank() > status.rank() {
             *status = s;
         }
         reasons.push(r);
@@ -1817,7 +1866,7 @@ fn parse_nvme(p: &SmartctlJson, device: &str, model: &str, transport: &str) -> D
 - [ ] **Step 5: Run the parsing tests**
 
 Run: `cargo test --test smart_parsing_test`
-Expected: 16/16 pass.
+Expected: 17/17 pass.
 
 - [ ] **Step 6: Re-run all unit tests + clippy**
 
@@ -2105,11 +2154,10 @@ pub fn render_service_unit(pgforge_path: &Path) -> String {
 
 Note: the `thiserror` crate may already be in tree — verify with `grep '^thiserror' Cargo.toml`. If not present, fall back to a hand-written impl (Display + std::error::Error). The rest of this plan assumes thiserror is available; adjust if not.
 
-- [ ] **Step 4: Add thiserror dep if missing**
+- [ ] **Step 4: Confirm thiserror is in tree**
 
 Run: `grep '^thiserror' Cargo.toml`
-- If present → skip this step.
-- If absent → add `thiserror = "1"` to `Cargo.toml` `[dependencies]` (alphabetical insertion), commit with the install.rs work.
+Expected: `thiserror = "2.0"` (already present as of 2026-05-17). The derive macro syntax used above (`#[derive(thiserror::Error)]`, `#[error("...")]`, `#[from]`) is the same in 1.x and 2.x, so the code compiles either way. Do NOT downgrade to 1.x.
 
 - [ ] **Step 5: Run the renderer tests**
 
@@ -2303,7 +2351,7 @@ pub fn postinstall_summary(health: &SmartHealth) -> String {
                 d.unknown_reason == Some(crate::smart::types::SmartUnknownReason::DeviceNotSupported)
             });
             if !health.drives.is_empty() && all_unsupported {
-                "⚠ Install completed, but no disk exposes SMART data (typical on VPS \
+                "\u{26A0} Install completed, but no disk exposes SMART data (typical on VPS \
                  without passthrough). Status will be 'SMART ?' indefinitely. Capacity \
                  monitoring (Disk N% used) continues to work. To remove: pgforge smart uninstall.".to_string()
             } else {
@@ -2436,9 +2484,10 @@ pub async fn run_uninstall() -> Result<()> {
 }
 
 pub async fn run_check(write_cache_flag: bool) -> Result<()> {
+    use std::io::IsTerminal;
     let installed = read_installed(&default_installed_path());
     // TTY + no --write-cache → user is at the keyboard, interactive sudo OK.
-    let sudo_mode = if !write_cache_flag && std::io::stdout_is_tty() {
+    let sudo_mode = if !write_cache_flag && std::io::stdout().is_terminal() {
         SudoMode::Interactive
     } else {
         SudoMode::NonInteractive
@@ -2471,13 +2520,9 @@ pub async fn run_status() -> Result<()> {
     Ok(())
 }
 
-// Helper because std::io::IsTerminal is a trait we need to bring into scope.
-mod io_ext {
-    use std::io::IsTerminal;
-    pub fn stdout_is_tty() -> bool { std::io::stdout().is_terminal() }
-}
-pub use io_ext::stdout_is_tty;
 ```
+
+Note: `std::io::IsTerminal` is brought into scope inside `run_check` (Rust trait method import). No helper module needed — keep the call site simple.
 
 Then in `src/commands/mod.rs`, add `pub mod smart;` next to the other modules.
 
@@ -2816,20 +2861,66 @@ pub fn spawn_smart_reader(
 
 - [ ] **Step 4: Wire the poller into `spawn_pollers`**
 
-Still in `src/tui/refresh.rs`, find the `pub fn spawn_pollers(...)` body and add at the bottom (after the existing disk-health spawn block):
+In `src/tui/refresh.rs`, find the existing disk-health `if let Ok(docker) = ...::connect() { spawn_disk_health(..., tx); } else { tracing::warn!(...); }` block. The `tx` argument is moved into `spawn_disk_health` on the success branch, so we MUST clone before that call so we still have a `tx` to hand to `spawn_smart_reader`. Replace the existing block:
 
 ```rust
+    if let Ok(docker) = crate::docker::bollard_engine::BollardEngine::connect() {
+        spawn_disk_health(std::sync::Arc::new(docker), tx.clone());
+    } else {
+        tracing::warn!(target: "pgforge::tui::refresh",
+            "disk-health poller: BollardEngine::connect failed; status will be Unknown");
+    }
     spawn_smart_reader(tx, crate::smart::cache::default_cache_path());
 ```
 
-(`tx` is the existing `UnboundedSender<Event>` argument — pass `tx` by value here since this is the last consumer in the function; if there's any later consumer downstream, clone instead.)
+`spawn_smart_reader` consumes `tx` as the last call in the function — no further clone needed.
 
-- [ ] **Step 5: Build + clippy + test**
+- [ ] **Step 5: Add a unit test for the poller (mirror disk_health_poller_tests)**
+
+In `src/tui/refresh.rs`, append a `#[cfg(test)] mod smart_reader_tests` that mirrors the existing `disk_health_poller_tests::spawn_disk_health_emits_event_within_two_ticks` pattern (refresh.rs around line 184). The test writes a fresh SmartHealth cache to a tempdir → spawns the reader → asserts an event arrives within 3 seconds (well under the 60s poll period — the eager first read should fire ~immediately):
+
+```rust
+#[cfg(test)]
+mod smart_reader_tests {
+    use super::*;
+    use pgforge::smart::cache::write_cache;
+    use pgforge::smart::types::{
+        DriveSmart, SmartHealth, SmartStatus,
+    };
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[tokio::test]
+    async fn spawn_smart_reader_emits_event_eagerly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("disk-smart.json");
+        let drive = DriveSmart {
+            device: "/dev/nvme0n1".into(),
+            model: "T".into(),
+            transport: "nvme".into(),
+            status: SmartStatus::Ok,
+            reasons: vec![],
+            unknown_reason: None,
+        };
+        let health = SmartHealth::aggregate(vec![drive], jiff::Timestamp::now());
+        write_cache(&path, &health).unwrap();
+        let (tx, mut rx) = unbounded_channel();
+        let h = spawn_smart_reader(tx, path);
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await.expect("event in 3s").expect("channel open");
+        assert!(matches!(ev, Event::SmartRefreshed(_)));
+        h.abort();
+    }
+}
+```
+
+(NB: `super::*` does NOT import the crate root `pgforge::*` — but the test module is INSIDE the `src/tui/refresh.rs` crate code, so `pgforge::smart::...` resolves via the crate's own name. Use `crate::smart::...` instead if the test doesn't compile that way — `crate::` is more idiomatic inside `#[cfg(test)] mod` blocks defined inside library source files.)
+
+- [ ] **Step 6: Build + clippy + test**
 
 Run: `cargo build && cargo clippy --all-targets -- -D warnings && cargo test`
-Expected: green.
+Expected: green; the new test passes in well under 3s (eager read fires ~immediately).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/tui/events.rs src/tui/app.rs src/tui/refresh.rs
@@ -2852,10 +2943,11 @@ EOF
 
 ---
 
-## Task 13: TUI footer 4-zone layout + format_smart_zone
+## Task 13: TUI footer 4-zone layout + format_smart_zone + Help modal line
 
 **Files:**
 - Modify: `src/tui/ui/bottom.rs`
+- Modify: `src/tui/ui/modal.rs` (Help modal — add Footer indicators line)
 - Create: `tests/tui_smart_zone_test.rs`
 
 - [ ] **Step 1: Write the failing test**
@@ -2953,6 +3045,8 @@ pub fn format_smart_zone(h: Option<&crate::smart::types::SmartHealth>) -> SmartZ
             style: Style::default().add_modifier(Modifier::DIM),
         };
     };
+    // SmartStatus::Unknown.label() returns "?" (see types.rs), so the
+    // single format!() handles all four cases — no override needed.
     let label = format!(" SMART {} ", h.status.label());
     let style = match h.status {
         SmartStatus::Ok       => Style::default().add_modifier(Modifier::DIM),
@@ -2960,14 +3054,9 @@ pub fn format_smart_zone(h: Option<&crate::smart::types::SmartHealth>) -> SmartZ
         SmartStatus::Critical => Style::default().fg(Color::Red),
         SmartStatus::Unknown  => Style::default().add_modifier(Modifier::DIM),
     };
-    let label = if matches!(h.status, SmartStatus::Unknown) {
-        " SMART ? ".to_string()
-    } else { label };
     SmartZone { label, style }
 }
 ```
-
-(The double assignment for `label` is intentional and clearer than a nested match — Unknown overrides the label format because we want `?` not `unknown`.)
 
 Then in the existing `pub fn render(f: &mut Frame, area: Rect, state: &AppState)` function, find the existing 3-zone layout and replace with 4:
 
@@ -2999,20 +3088,34 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 }
 ```
 
-- [ ] **Step 4: Run the zone test**
+- [ ] **Step 4: Add the Help modal Footer indicators section**
+
+Spec §"Help modal mention" requires that the existing `Modal::Help` (in `src/tui/ui/modal.rs`) document the two footer indicators. Open `src/tui/ui/modal.rs` and find the `render_help_modal` (or whichever fn renders Modal::Help — the existing function around lines 39–68). Find the line where existing footer-key descriptions are emitted and add a "Footer indicators" subsection:
+
+Look for the existing block that emits the key reference (something like a string concat or a Vec<Line> the modal renders). Add these two lines under a "Footer indicators:" header:
+
+```
+Footer indicators:
+  SMART ok/warn/fail/?    Daily SMART disk health (set up with `pgforge smart install`)
+  Disk N% used / ?        Capacity of disks holding Docker, state, dumps
+```
+
+Match the exact rendering style (`Line::raw(...)` or `Span::raw(...)`) the existing modal uses. Do NOT introduce a new modal kind — this is content edit only.
+
+- [ ] **Step 5: Run the zone test**
 
 Run: `cargo test --test tui_smart_zone_test`
 Expected: 5/5 pass.
 
-- [ ] **Step 5: Run all tests + clippy**
+- [ ] **Step 6: Run all tests + clippy**
 
 Run: `cargo test && cargo clippy --all-targets -- -D warnings`
 Expected: green, clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/tui/ui/bottom.rs tests/tui_smart_zone_test.rs
+git add src/tui/ui/bottom.rs src/tui/ui/modal.rs tests/tui_smart_zone_test.rs
 git commit -m "$(cat <<'EOF'
 feat(tui): 4-zone footer — SMART zone left of Disk N% used
 
