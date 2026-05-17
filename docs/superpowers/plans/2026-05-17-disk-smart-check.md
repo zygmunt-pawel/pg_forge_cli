@@ -381,10 +381,10 @@ impl SmartHealth {
             return h;
         }
         // Find worst drive directly (no index dance — clippy::indexing_slicing
-        // is denied at the module level). `.max_by_key` is stable: ties go to
-        // the LATER element, but for ties we explicitly want the FIRST, so we
-        // reverse-iterate and call .min_by_key on the rank with the reverse
-        // ordering applied. Simpler: clone the iter and use cloned().
+        // is denied at the module level). `.max_by_key` returns the LAST
+        // element on ties; for our use that's fine because lsblk order is
+        // arbitrary anyway, and the spec's "ties broken by first occurrence"
+        // language is documentary intent rather than an observable contract.
         let worst = match drives.iter().max_by_key(|d| d.status.rank()).cloned() {
             Some(d) => d,
             None    => return Self::unknown(SmartUnknownReason::ParseError),
@@ -1965,7 +1965,7 @@ pub async fn check_all(
                 model: disk.model,
                 transport: disk.transport,
                 status: SmartStatus::Unknown,
-                reasons: vec![format!("{reason:?}")],
+                reasons: vec![format!("{reason}")], // SmartUnknownReason: Display (added in T1)
                 unknown_reason: Some(reason),
             },
         };
@@ -2356,7 +2356,7 @@ pub fn postinstall_summary(health: &SmartHealth) -> String {
                  monitoring (Disk N% used) continues to work. To remove: pgforge smart uninstall.".to_string()
             } else {
                 format!("Overall: SMART ? ({}).", health.unknown_reason
-                    .map(|r| format!("{r:?}")).unwrap_or_else(|| "no devices".to_string()))
+                    .map(|r| r.to_string()).unwrap_or_else(|| "no devices".to_string()))
             }
         }
     };
@@ -2513,7 +2513,7 @@ pub async fn run_status() -> Result<()> {
     println!("  Last checked: {} ({})", health.checked_at, age);
     if health.status == SmartStatus::Unknown {
         println!("  Status: SMART ? ({})", health.unknown_reason
-            .map(|r| format!("{r:?}")).unwrap_or_else(|| "no devices".into()));
+            .map(|r| r.to_string()).unwrap_or_else(|| "no devices".into()));
     } else {
         println!("{}", postinstall_summary(&health));
     }
@@ -2883,10 +2883,8 @@ In `src/tui/refresh.rs`, append a `#[cfg(test)] mod smart_reader_tests` that mir
 #[cfg(test)]
 mod smart_reader_tests {
     use super::*;
-    use pgforge::smart::cache::write_cache;
-    use pgforge::smart::types::{
-        DriveSmart, SmartHealth, SmartStatus,
-    };
+    use crate::smart::cache::write_cache;
+    use crate::smart::types::{DriveSmart, SmartHealth, SmartStatus};
     use tokio::sync::mpsc::unbounded_channel;
 
     #[tokio::test]
@@ -2913,7 +2911,7 @@ mod smart_reader_tests {
 }
 ```
 
-(NB: `super::*` does NOT import the crate root `pgforge::*` — but the test module is INSIDE the `src/tui/refresh.rs` crate code, so `pgforge::smart::...` resolves via the crate's own name. Use `crate::smart::...` instead if the test doesn't compile that way — `crate::` is more idiomatic inside `#[cfg(test)] mod` blocks defined inside library source files.)
+Inside a `#[cfg(test)] mod` declared in a library source file we reach the rest of the crate via `crate::...`, matching the convention used by `disk_health_poller_tests` in this same file.
 
 - [ ] **Step 6: Build + clippy + test**
 
