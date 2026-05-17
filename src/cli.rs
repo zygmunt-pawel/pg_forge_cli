@@ -283,6 +283,23 @@ pub fn format_banner_line(h: &crate::disk::health::DiskHealth) -> Option<String>
     ))
 }
 
+/// Format a one-line warning banner for `stderr` from a SMART snapshot.
+///
+/// Returns `None` for any status except `Critical`. Warn is shown only in
+/// the TUI (anti-desensitization — Warn in CLI would fire on every
+/// "percentage_used=82%" NVMe drive, training operators to ignore it).
+pub fn format_smart_banner_line(h: &crate::smart::types::SmartHealth) -> Option<String> {
+    use crate::smart::types::SmartStatus;
+    if h.status != SmartStatus::Critical {
+        return None;
+    }
+    let device = h.worst_device.as_deref().unwrap_or("?");
+    let reasons = h.worst_reasons.join(", ");
+    Some(format!(
+        "\u{26A0} SMART CRITICAL on {device}: {reasons}. Replace drive before Postgres data corruption."
+    ))
+}
+
 fn tilde_collapse(path: &str) -> String {
     if let Ok(home) = std::env::var("HOME")
         && let Some(rest) = path.strip_prefix(&home)
@@ -293,6 +310,23 @@ fn tilde_collapse(path: &str) -> String {
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
+    // Pre-dispatch SMART banner — Critical only. Reads the cache (no
+    // smartctl call). Fires before the capacity banner so SMART (hardware)
+    // appears above Capacity (fixable by cleanup) on stderr.
+    if let Some(cmd) = &cli.command
+        && should_emit_banner_for_command(cmd)
+    {
+        let sh = crate::smart::cache::read_cache(
+            &crate::smart::cache::default_cache_path(),
+            jiff::Timestamp::now(),
+            crate::smart::cache::STALE_AFTER_HOURS,
+        );
+        if let Some(line) = format_smart_banner_line(&sh) {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "{line}");
+        }
+    }
+
     // Disk-health banner — best-effort, never breaks dispatch.
     if let Some(cmd) = &cli.command
         && should_emit_banner_for_command(cmd)
