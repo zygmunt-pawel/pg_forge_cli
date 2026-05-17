@@ -48,19 +48,29 @@ pub async fn run_check(write_cache_flag: bool) -> Result<()> {
 }
 
 pub async fn run_status() -> Result<()> {
+    use crate::smart::types::SmartUnknownReason;
     let path = default_cache_path();
     let now = jiff::Timestamp::now();
     let health = read_cache(&path, now, STALE_AFTER_HOURS);
     println!("SMART status (cache: {})", path.display());
+    // Special-case NoCache so we don't print "Last checked: <now> (0h 0m
+    // ago)" when there's no cache at all (Unknown(NoCache) carries
+    // checked_at=Timestamp::now() to keep the field non-Optional).
+    if health.unknown_reason == Some(SmartUnknownReason::NoCache) {
+        println!("  No cache file. Run `pgforge smart install` first, or");
+        println!("  `pgforge smart check` for an ad-hoc check.");
+        return Ok(());
+    }
     let age = now
         .since(health.checked_at)
         .ok()
         .map(|s| {
-            format!(
-                "{:.0}h {:.0}m ago",
-                s.total(jiff::Unit::Hour).unwrap_or(0.0),
-                s.total(jiff::Unit::Minute).unwrap_or(0.0) % 60.0
-            )
+            // Use integer truncation so "5h 34m" is exactly 5h 34m and never
+            // "6h 34m" via float rounding of total_hours.
+            let total_secs = s.total(jiff::Unit::Second).unwrap_or(0.0) as i64;
+            let hours = total_secs / 3600;
+            let minutes = (total_secs % 3600) / 60;
+            format!("{hours}h {minutes}m ago")
         })
         .unwrap_or_else(|| "unknown".into());
     println!("  Last checked: {} ({})", health.checked_at, age);

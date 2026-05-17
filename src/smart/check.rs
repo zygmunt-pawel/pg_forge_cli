@@ -457,6 +457,12 @@ pub async fn check_all(
                 // Always overwrite device with the canonical lsblk path
                 // (smartctl sometimes echoes a different alias).
                 d.device = disk.path.display().to_string();
+                // Always overwrite transport with the lsblk transport string
+                // (sata/sas/nvme) — parse_smartctl_json fills it with the
+                // smartctl device.protocol ("ATA"/"SCSI"/"NVMe") which is a
+                // different convention. Keep the cache rows internally
+                // consistent across success and error branches.
+                d.transport = disk.transport.clone();
                 d
             }
             Err(reason) => DriveSmart {
