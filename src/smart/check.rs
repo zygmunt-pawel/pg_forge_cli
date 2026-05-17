@@ -413,6 +413,66 @@ fn parse_nvme(p: &SmartctlJson, device: &str, model: &str, transport: &str) -> D
     }
 }
 
+use crate::smart::installed::InstalledState;
+use crate::smart::types::SmartHealth;
+
+/// Wire discover → run_smartctl → parse → aggregate. Returns a fully
+/// populated `SmartHealth` ready to write to the cache. Never fails — every
+/// per-device error produces a `DriveSmart` with `SmartStatus::Unknown`.
+///
+/// `installed` is the persisted record from `pgforge smart install` (used
+/// for the smartctl absolute path). If None → degrade every drive to
+/// `Unknown(NoInstalledState)`.
+pub async fn check_all(
+    installed: Option<&InstalledState>,
+    sudo_mode: SudoMode,
+) -> SmartHealth {
+    let now = jiff::Timestamp::now();
+    let discovered = discover_disks().await;
+    if discovered.is_empty() {
+        let mut h = SmartHealth::unknown(SmartUnknownReason::NoDevicesFound);
+        h.checked_at = now;
+        return h;
+    }
+    let Some(state) = installed else {
+        let drives = discovered.into_iter().map(|d| DriveSmart {
+            device: d.path.display().to_string(),
+            model: d.model,
+            transport: d.transport,
+            status: SmartStatus::Unknown,
+            reasons: vec!["pgforge smart install has not been run".to_string()],
+            unknown_reason: Some(SmartUnknownReason::NoInstalledState),
+        }).collect::<Vec<_>>();
+        return SmartHealth::aggregate(drives, now);
+    };
+
+    let mut drives: Vec<DriveSmart> = Vec::with_capacity(discovered.len());
+    for disk in discovered {
+        let result = run_smartctl(&state.smartctl_path, &disk.path, sudo_mode).await;
+        let drive = match result {
+            Ok(bytes) => {
+                let mut d = parse_smartctl_json(&bytes);
+                // Preserve the lsblk-known model if smartctl didn't echo one.
+                if d.model.is_empty() { d.model = disk.model.clone(); }
+                // Always overwrite device with the canonical lsblk path
+                // (smartctl sometimes echoes a different alias).
+                d.device = disk.path.display().to_string();
+                d
+            }
+            Err(reason) => DriveSmart {
+                device: disk.path.display().to_string(),
+                model: disk.model,
+                transport: disk.transport,
+                status: SmartStatus::Unknown,
+                reasons: vec![format!("{reason}")], // SmartUnknownReason: Display (added in T1)
+                unknown_reason: Some(reason),
+            },
+        };
+        drives.push(drive);
+    }
+    SmartHealth::aggregate(drives, now)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing)]
