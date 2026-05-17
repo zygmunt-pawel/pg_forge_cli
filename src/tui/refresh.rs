@@ -26,11 +26,12 @@ pub fn spawn_pollers(
     // Disk-health poller wraps the same BollardEngine the other pollers
     // create per-tick. Cheaper to share one connect() here.
     if let Ok(docker) = crate::docker::bollard_engine::BollardEngine::connect() {
-        spawn_disk_health(std::sync::Arc::new(docker), tx);
+        spawn_disk_health(std::sync::Arc::new(docker), tx.clone());
     } else {
         tracing::warn!(target: "pgforge::tui::refresh",
             "disk-health poller: BollardEngine::connect failed; status will be Unknown");
     }
+    spawn_smart_reader(tx, crate::smart::cache::default_cache_path());
 }
 
 fn spawn_ls(tx: UnboundedSender<Event>, state_root: Option<PathBuf>) {
@@ -163,6 +164,42 @@ where
     })
 }
 
+const SMART_READ_PERIOD: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 60-second poller that reads the SMART cache file (no smartctl invocation,
+/// no sudo, no Docker call — pure file read). Eager first read so the TUI
+/// footer doesn't show `SMART ?` for a full minute on startup when there's
+/// a valid cache sitting on disk.
+pub fn spawn_smart_reader(
+    tx: tokio::sync::mpsc::UnboundedSender<Event>,
+    cache_path: std::path::PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Eager first read.
+        let h = crate::smart::cache::read_cache(
+            &cache_path,
+            jiff::Timestamp::now(),
+            crate::smart::cache::STALE_AFTER_HOURS,
+        );
+        let _ = tx.send(Event::SmartRefreshed(h));
+
+        let mut iv = tokio::time::interval(SMART_READ_PERIOD);
+        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The first iv.tick() fires immediately — consume it since we
+        // already did the eager read above.
+        iv.tick().await;
+        loop {
+            iv.tick().await;
+            let h = crate::smart::cache::read_cache(
+                &cache_path,
+                jiff::Timestamp::now(),
+                crate::smart::cache::STALE_AFTER_HOURS,
+            );
+            let _ = tx.send(Event::SmartRefreshed(h));
+        }
+    })
+}
+
 /// On-demand refresh of a single instance — used after a successful op
 /// to surface the new state without waiting a poller tick.
 pub fn refresh_one(name: String, tx: UnboundedSender<Event>, state_root: Option<PathBuf>) {
@@ -179,6 +216,36 @@ pub fn refresh_one(name: String, tx: UnboundedSender<Event>, state_root: Option<
         let pitr = snapshots::pitr_window(&name, &docker, &root).await.unwrap_or_default();
         let _ = tx.send(Event::SnapshotsRefreshed { name, view: SnapshotsView { list, pitr } });
     });
+}
+
+#[cfg(test)]
+mod smart_reader_tests {
+    use super::*;
+    use crate::smart::cache::write_cache;
+    use crate::smart::types::{DriveSmart, SmartHealth, SmartStatus};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[tokio::test]
+    async fn spawn_smart_reader_emits_event_eagerly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("disk-smart.json");
+        let drive = DriveSmart {
+            device: "/dev/nvme0n1".into(),
+            model: "T".into(),
+            transport: "nvme".into(),
+            status: SmartStatus::Ok,
+            reasons: vec![],
+            unknown_reason: None,
+        };
+        let health = SmartHealth::aggregate(vec![drive], jiff::Timestamp::now());
+        write_cache(&path, &health).unwrap();
+        let (tx, mut rx) = unbounded_channel();
+        let h = spawn_smart_reader(tx, path);
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await.expect("event in 3s").expect("channel open");
+        assert!(matches!(ev, Event::SmartRefreshed(_)));
+        h.abort();
+    }
 }
 
 #[cfg(test)]

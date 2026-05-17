@@ -30,6 +30,7 @@ pub enum Event {
     },
     SelfUpdateFailed { msg: String },
     DiskHealthRefreshed(crate::disk::health::DiskHealth),
+    SmartRefreshed(crate::smart::types::SmartHealth),
 }
 
 #[derive(Debug, Clone)]

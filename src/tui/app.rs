@@ -50,6 +50,9 @@ pub struct AppState {
     /// None until the first poll result arrives (~15s after TUI starts,
     /// but the first tick fires immediately so in practice it's instant).
     pub disk_health: Option<crate::disk::health::DiskHealth>,
+    /// Latest SMART health snapshot from the background cache reader.
+    /// None until the first eager read fires at TUI startup.
+    pub smart_health: Option<crate::smart::types::SmartHealth>,
 }
 
 impl Default for AppState {
@@ -74,6 +77,7 @@ impl Default for AppState {
             cpu_history: HashMap::new(),
             pending_self_update: false,
             disk_health: None,
+            smart_health: None,
         }
     }
 }
@@ -220,6 +224,9 @@ impl AppState {
             }
             Event::DiskHealthRefreshed(h) => {
                 self.disk_health = Some(h);
+            }
+            Event::SmartRefreshed(h) => {
+                self.smart_health = Some(h);
             }
             Event::Tick => {
                 self.now = Instant::now();
