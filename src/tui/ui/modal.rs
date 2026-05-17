@@ -55,8 +55,12 @@ pub fn render(f: &mut Frame, full: Rect, modal: &Modal) {
             Line::from("    [e] snapshots History"),
             Line::from(""),
             Line::from("  [esc] close any modal"),
+            Line::from(""),
+            Line::from("  Footer indicators:"),
+            Line::from("    SMART ok/warn/fail/?    Daily SMART disk health (set up with `pgforge smart install`)"),
+            Line::from("    Disk N% used / ?        Capacity of disks holding Docker, state, dumps"),
         ];
-        let area = centered_rect(54, lines.len() as u16 + 2, full);
+        let area = centered_rect(92, lines.len() as u16 + 2, full);
         f.render_widget(Clear, area);
         let block = Block::default()
             .borders(Borders::ALL)

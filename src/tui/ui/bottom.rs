@@ -12,14 +12,20 @@ const SPINNER: &[char] = &['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧'];
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-    let disk = format_disk_zone(state.disk_health.as_ref());
-    let [content_area, disk_area, version_area] = Layout::horizontal([
+    let disk  = format_disk_zone(state.disk_health.as_ref());
+    let smart = format_smart_zone(state.smart_health.as_ref());
+    let [content_area, smart_area, disk_area, version_area] = Layout::horizontal([
         Constraint::Min(0),
+        Constraint::Length(smart.label.chars().count() as u16),
         Constraint::Length(disk.label.chars().count() as u16),
         Constraint::Length(version.chars().count() as u16),
     ])
     .areas(area);
     render_content(f, content_area, state);
+    f.render_widget(
+        Paragraph::new(smart.label).style(smart.style),
+        smart_area,
+    );
     f.render_widget(
         Paragraph::new(disk.label).style(disk.style),
         disk_area,
@@ -31,6 +37,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 }
 
 struct DiskZone { label: String, style: Style }
+
+pub struct SmartZone { pub label: String, pub style: Style }
 
 fn format_disk_zone(h: Option<&crate::disk::health::DiskHealth>) -> DiskZone {
     use crate::disk::health::DiskStatus;
@@ -51,6 +59,26 @@ fn format_disk_zone(h: Option<&crate::disk::health::DiskHealth>) -> DiskZone {
                                  Style::default().fg(Color::Red)),
     };
     DiskZone { label, style }
+}
+
+pub fn format_smart_zone(h: Option<&crate::smart::types::SmartHealth>) -> SmartZone {
+    use crate::smart::types::SmartStatus;
+    let Some(h) = h else {
+        return SmartZone {
+            label: " SMART ? ".to_string(),
+            style: Style::default().add_modifier(Modifier::DIM),
+        };
+    };
+    // SmartStatus::Unknown.label() returns "?" (see types.rs), so the
+    // single format!() handles all four cases — no override needed.
+    let label = format!(" SMART {} ", h.status.label());
+    let style = match h.status {
+        SmartStatus::Ok       => Style::default().add_modifier(Modifier::DIM),
+        SmartStatus::Warn     => Style::default().fg(Color::Yellow),
+        SmartStatus::Critical => Style::default().fg(Color::Red),
+        SmartStatus::Unknown  => Style::default().add_modifier(Modifier::DIM),
+    };
+    SmartZone { label, style }
 }
 
 fn render_content(f: &mut Frame, area: Rect, state: &AppState) {
