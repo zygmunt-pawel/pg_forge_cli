@@ -13,6 +13,26 @@ pub enum ScheduleAction {
     Status,
 }
 
+#[derive(clap::Subcommand, Debug)]
+pub enum SmartAction {
+    /// Set up sudoers + systemd-user timer for daily SMART check
+    Install {
+        /// Overwrite existing /etc/sudoers.d/pgforge-smart even when content differs
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run smartctl now and print human-readable status
+    Check {
+        /// Internal — used by the systemd-user timer to refresh the cache
+        #[arg(long, hide = true)]
+        write_cache: bool,
+    },
+    /// Read the cache and print (no smartctl call)
+    Status,
+    /// Remove sudoers, timer, and cache files
+    Uninstall,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "pgforge", version, about = "Hardened single-host PostgreSQL provisioner")]
 pub struct Cli {
@@ -148,6 +168,11 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// SMART hardware health monitoring (predictive disk failure detection)
+    Smart {
+        #[command(subcommand)]
+        action: SmartAction,
+    },
     /// Permanently delete an instance: stop + remove container, drop
     /// data volume, remove state.toml. Optionally also wipe S3 backups
     /// (full + WAL archives + PITR window) via pgbackrest stanza-delete.
@@ -236,6 +261,7 @@ pub fn should_emit_banner_for_command(cmd: &Command) -> bool {
             | Command::Snapshots { .. }
             | Command::Dump { .. }
             | Command::Snapshot { due: true, .. }
+            | Command::Smart { .. }
     )
 }
 
@@ -464,6 +490,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Smart { action }) => match action {
+            SmartAction::Install   { force }       => crate::commands::smart::run_install(force).await,
+            SmartAction::Check     { write_cache } => crate::commands::smart::run_check(write_cache).await,
+            SmartAction::Status                    => crate::commands::smart::run_status().await,
+            SmartAction::Uninstall                 => crate::commands::smart::run_uninstall().await,
+        },
         Some(Command::Destroy { name, delete_backups, yes }) => {
             // Interactive guard: load state to confirm instance exists and
             // print what's about to be destroyed, then require the user to

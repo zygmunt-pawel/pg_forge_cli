@@ -9,6 +9,7 @@ pub mod restore;
 pub mod rotate;
 pub mod schedule;
 pub mod self_update;
+pub mod smart;
 pub mod snapshot;
 pub mod snapshots;
 pub mod status;
