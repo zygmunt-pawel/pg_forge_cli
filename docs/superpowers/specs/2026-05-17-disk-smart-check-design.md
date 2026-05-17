@@ -873,7 +873,7 @@ pgforge smart uninstall  # remove sudoers + timer + cache
 - `tests/smart_install_test.rs`:
   - `render_sudoers_fragment("pawel", "/usr/sbin/smartctl", &["/dev/nvme0n1", "/dev/sda"])` → byte-exact match against expected literal.
   - `render_sudoers_fragment("pawel", "/usr/sbin/smartctl", &[])` → `Err(InstallError::NoDevices)`.
-  - `render_timer_unit()` and `render_service_unit("/usr/sbin/smartctl", "/home/pawel/.local/bin/pgforge")` → byte-exact (snapshot). ExecStart contains the absolute pgforge path.
+  - `render_timer_unit()` (no args) and `render_service_unit("/home/pawel/.local/bin/pgforge")` → byte-exact (snapshot). ExecStart contains the absolute pgforge path (the unit invokes `pgforge smart check --write-cache`, not smartctl).
   - `InstalledState` round-trip (build → write → read → equal).
   - No actual sudo, no actual write to /etc — just rendering and tempdir tests.
 - `tests/cli_smart_banner_test.rs`:
