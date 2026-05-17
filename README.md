@@ -201,6 +201,129 @@ through SSH if your local terminal supports it (iTerm2, kitty, WezTerm,
 Alacritty, tmux ≥ 3.3 do). If your terminal doesn't, copy is a no-op and a
 flash warning shows.
 
+## Disk health
+
+pgforge surfaces two independent disk-health signals in the TUI footer and as
+optional pre-dispatch CLI banners. They are independent because they answer
+different questions and require different remediations.
+
+### Capacity (`Disk N% used`)
+
+Shown continuously in the TUI footer. Read every 15s via `statvfs` across the
+filesystems holding Docker volumes, the pgforge state directory, and the
+pgforge dumps directory. Aggregate = worst-of.
+
+Thresholds: < 80% Ok (dim), 80–89% Warn (yellow), ≥ 90% Critical (red). When
+Warn or Critical, every interactive `pgforge` CLI command (except `ls`,
+`status`, `snapshots`, `dump`, `snapshot --due`) prints a one-line stderr
+banner before its output.
+
+Remediation: free space, resize the volume, prune snapshots, or move the data
+directory.
+
+### SMART hardware monitoring
+
+Catches a physically failing drive (reallocated sectors, NVMe wear,
+available-spare exhaustion, OVERALL_HEALTH=FAILED) *before* the drive starts
+refusing writes. Independent from the capacity signal — a 30%-full drive can
+still be dying.
+
+#### Setup (one-time)
+
+```bash
+# Install smartmontools if missing
+sudo apt install smartmontools   # Debian/Ubuntu
+
+# Set up pgforge SMART monitoring
+pgforge smart install
+```
+
+`pgforge smart install` does:
+1. Auto-discovers physical disks via `lsblk` (filters to sata/sas/nvme).
+2. Writes a tightly-scoped sudoers fragment at `/etc/sudoers.d/pgforge-smart`
+   that allows the pgforge user to run *only* `smartctl -H -A -j /dev/{disk}`
+   as root. You'll be asked for your sudo password once.
+3. Validates the fragment with `visudo -c` before declaring success (so a
+   malformed write can never lock you out of sudo).
+4. Installs a daily systemd-user timer (`pgforge-smart.timer`) that runs the
+   check at roughly the same time each day (jittered up to 1h).
+5. Runs the first check immediately and prints what it found.
+
+If no disk on your host exposes SMART (typical on VPS without passthrough),
+the install completes with a clear warning — the feature is a no-op there and
+the TUI/CLI will show `SMART ?` indefinitely. Capacity monitoring still works.
+
+#### What's monitored
+
+For each detected disk, on each daily tick:
+
+**SATA/SAS** — Critical if any of:
+- OVERALL_HEALTH=FAILED (smart_status.passed == false)
+- Reallocated_Sector_Ct > 0 (drive remapped a bad sector)
+- Current_Pending_Sector > 0 (sector failed to read but not yet remapped)
+- Offline_Uncorrectable > 0 (uncorrectable error during offline scan)
+
+Warn if: temperature > 60 °C.
+
+**NVMe** — Critical if any of:
+- OVERALL_HEALTH=FAILED
+- `critical_warning != 0` (NVMe spec bitmap: spare-below-threshold,
+  temp-critical, reliability-degraded, read-only, backup-failed, etc.)
+- `media_errors > 0`
+- `available_spare < available_spare_threshold`
+
+Warn if: `percentage_used >= 80%` (drive wear), temperature > 70 °C.
+
+#### Where the result lives
+
+`~/.local/state/pgforge/disk-smart.json` — a small JSON snapshot rewritten by
+each daily run. The TUI reads it every 60 s (no smartctl invocation in the hot
+path); the CLI banner reads it pre-dispatch.
+
+If the cache is older than 48 h (two missed daily runs), status degrades to
+`SMART ?` so you can tell when monitoring has silently stopped.
+
+#### Status meanings
+
+| TUI label   | Color  | What it means |
+|-------------|--------|---------------|
+| `SMART ok`  | dim    | All disks healthy; no flagged attributes |
+| `SMART warn`| yellow | One or more disks have a Warn-level signal (high temp, high NVMe wear). Plan a replacement window. |
+| `SMART fail`| red    | A Critical attribute fired (bad sectors, NVMe critical_warning, OVERALL_HEALTH=FAILED). Replace the drive ASAP. CLI also prints a stderr banner. |
+| `SMART ?`   | dim    | Unknown — drive doesn't expose SMART, cache is stale, smartctl not installed, sudoers missing, or first check hasn't run yet. Run `pgforge smart status` for the specific reason. |
+
+#### Day-to-day commands
+
+```bash
+pgforge smart check    # run smartctl now, print human-readable status
+pgforge smart status   # read cache + print (no smartctl call); shows when last checked
+pgforge smart uninstall  # remove sudoers + timer + cache
+```
+
+#### Troubleshooting
+
+- **`SMART ?` and you haven't run `pgforge smart install` yet** — run it.
+  The TUI shows `?` until the first check populates the cache.
+- **`SMART ?` after a successful install** — run `pgforge smart status` for
+  the specific reason. Common: `NoSudoers` (re-run `pgforge smart install`),
+  `Stale` (timer didn't fire — `systemctl --user status pgforge-smart.timer`),
+  `DeviceNotSupported` (your host doesn't expose SMART; expected on most VPS),
+  `DeviceMissing` (a disk listed in the sudoers fragment was hot-unplugged;
+  re-run `pgforge smart install --force`).
+- **Timer didn't fire across a reboot** — `Persistent=true` means missed runs
+  fire on next boot, BUT only after the timer has fired at least once
+  previously. The first install runs an immediate check explicitly to avoid
+  this. If a timer that has fired before still doesn't catch up after reboot:
+  `systemctl --user list-timers pgforge-smart.timer` and check linger is
+  enabled (`loginctl show-user $USER | grep Linger`).
+- **Added a new disk** — re-run `pgforge smart install --force` to refresh
+  the sudoers fragment with the new device path.
+- **smartctl path is unusual on your distro** — `pgforge smart install`
+  detects it via `which smartctl` at install time and persists the absolute
+  path in `~/.local/state/pgforge/smart-installed.json`. Re-run install if it
+  moves (e.g., after migrating between distros, or after a smartmontools
+  package update that changed the binary location).
+
 ## How it works
 
 Each instance is a Docker container running `postgres:<version>` with
@@ -212,21 +335,6 @@ files under `~/.local/share/pgforge/instances/`; writes are atomic (temp-file
 + fsync + rename, with a parent-directory fsync) and serialized with an
 advisory lock so
 the scheduler, the TUI, and interactive commands can't clobber each other.
-
-### Disk pressure
-
-Every interactive `pgforge` command (everything except `ls`, `status`,
-`snapshots`, `dump`, and `snapshot --due`) prints a one-line banner to
-stderr when the host disk is at ≥ 80%:
-
-```
-⚠ Disk 92% full on docker (/var/lib/docker) — Postgres writes / WAL
-  archiving WILL start failing.
-```
-
-The banner is suppressed when stderr is not a terminal (so pipes,
-cron, and `make` see clean output). The TUI corner shows the same
-signal continuously.
 
 ## Caveats
 
