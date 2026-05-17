@@ -214,7 +214,79 @@ fn parse_preset(s: &str) -> Result<Preset, String> {
     Preset::from_str(s)
 }
 
+/// Returns `true` when the disk-health banner should be printed to stderr
+/// before dispatching this command.
+///
+/// Gating rules:
+/// 1. `stderr` must be a real TTY — never emit under pipes, redirects, cron,
+///    or `cargo test`.
+/// 2. Machine-readable commands that operators pipe (`Ls`, `Status`,
+///    `Snapshots`, `Dump`) are excluded.
+/// 3. `Snapshot { due: true }` is the 5-minute systemd-timer path; emitting a
+///    banner there would spam the journal 288 × / day.
+pub fn should_emit_banner_for_command(cmd: &Command) -> bool {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        return false;
+    }
+    !matches!(
+        cmd,
+        Command::Ls
+            | Command::Status { .. }
+            | Command::Snapshots { .. }
+            | Command::Dump { .. }
+            | Command::Snapshot { due: true, .. }
+    )
+}
+
+/// Format a one-line warning banner for `stderr` from a `DiskHealth` snapshot.
+///
+/// Returns `None` for `Ok` and `Unknown` — only `Warn` and `Critical` produce
+/// a banner.
+pub fn format_banner_line(h: &crate::disk::health::DiskHealth) -> Option<String> {
+    use crate::disk::health::DiskStatus;
+    let verb = match h.status {
+        DiskStatus::Warn => "may start failing",
+        DiskStatus::Critical => "WILL start failing",
+        _ => return None,
+    };
+    let path = tilde_collapse(&h.worst_mount.display().to_string());
+    Some(format!(
+        "\u{26A0} Disk {}% full on {} ({}) \u{2014} Postgres writes / WAL archiving {verb}.",
+        h.worst_pct, h.worst_label, path
+    ))
+}
+
+fn tilde_collapse(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME")
+        && let Some(rest) = path.strip_prefix(&home)
+    {
+        return format!("~{rest}");
+    }
+    path.to_string()
+}
+
 pub async fn dispatch(cli: Cli) -> Result<()> {
+    // Disk-health banner — best-effort, never breaks dispatch.
+    if let Some(cmd) = &cli.command
+        && should_emit_banner_for_command(cmd)
+        && let Ok(docker) = crate::docker::bollard_engine::BollardEngine::connect()
+    {
+        let h = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::disk::health::check_disk_health(&docker, None, None),
+        )
+        .await
+        {
+            Ok(h) => h,
+            Err(_) => crate::disk::health::DiskHealth::unknown(),
+        };
+        if let Some(line) = format_banner_line(&h) {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "{line}");
+        }
+    }
+
     match cli.command {
         None => {
             use std::io::IsTerminal;
